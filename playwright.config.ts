@@ -1,4 +1,6 @@
 import { defineConfig, devices } from '@playwright/test'
+import path from 'node:path'
+import { testApiKey } from './tests/e2e/settings'
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -22,5 +24,9 @@ export default defineConfig({
     url: 'http://127.0.0.1:3100',
     reuseExistingServer: false,
     timeout: 60_000,
+    env: {
+      SCENE_API_KEY: testApiKey,
+      SCENE_DATA_DIR: path.resolve('test-results/scene-data'),
+    },
   },
 })

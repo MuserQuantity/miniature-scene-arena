@@ -12,6 +12,10 @@ services:
     init: true
     environment:
       SITE_URL: ${SITE_URL:?Set SITE_URL in .env}
+      SCENE_API_KEY: ${SCENE_API_KEY:?Run pnpm scenes init-key to configure .env}
+      SCENE_DATA_DIR: /app/data
+    volumes:
+      - scene-data:/app/data
     expose:
       - "3000"
     cap_drop:
@@ -35,3 +39,6 @@ networks:
   traefik:
     external: true
     name: ${TRAEFIK_NETWORK:?Set TRAEFIK_NETWORK in .env}
+
+volumes:
+  scene-data:

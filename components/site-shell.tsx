@@ -3,11 +3,10 @@
 import Link from 'next/link'
 import { useState } from 'react'
 import { usePathname } from 'next/navigation'
-import { ArrowUpRight, Box, Menu, ArrowLeft } from 'lucide-react'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Box, Menu, ArrowLeft } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Toaster } from '@/components/ui/sonner'
-import { cn } from '@/lib/utils'
 
 export function SiteHeader() {
   const pathname = usePathname()
@@ -25,12 +24,11 @@ export function SiteHeader() {
           <nav className="hidden items-center gap-9 md:flex" aria-label="主导航">
             {links.map((link) => <Link key={link.href} href={link.href} aria-current={(pathname === link.href || link.href === '/' && pathname.startsWith('/scenes/')) ? 'page' : undefined} className="quiet-link aria-[current=page]:text-foreground">{link.title}</Link>)}
           </nav>
-          <Link href="/admin" className={cn(buttonVariants({ variant: 'outline' }), 'hidden md:inline-flex')}>资料工作台 <ArrowUpRight data-icon="inline-end" /></Link>
           <Dialog open={menuOpen} onOpenChange={setMenuOpen}>
             <DialogTrigger render={<Button variant="ghost" size="icon" className="md:hidden" aria-label="打开导航" />}><Menu /></DialogTrigger>
             <DialogContent>
               <DialogHeader><DialogTitle>隅境 · 导航</DialogTitle></DialogHeader>
-              <nav className="flex flex-col gap-5" aria-label="移动端导航" onClick={(event) => { if ((event.target as Element).closest('a')) setMenuOpen(false) }}>{links.map((link) => <Link key={link.href} href={link.href} className="quiet-link">{link.title}</Link>)}<Link href="/admin" className="quiet-link">资料工作台</Link></nav>
+              <nav className="flex flex-col gap-5" aria-label="移动端导航" onClick={(event) => { if ((event.target as Element).closest('a')) setMenuOpen(false) }}>{links.map((link) => <Link key={link.href} href={link.href} className="quiet-link">{link.title}</Link>)}</nav>
             </DialogContent>
           </Dialog>
         </div>
@@ -50,8 +48,8 @@ export function SiteFooter() {
   </footer>
 }
 
-export function SiteShell({ children, footer = true }: { children: React.ReactNode; footer?: boolean }) {
-  return <><SiteHeader />{children}{footer && <SiteFooter />}<Toaster theme="dark" position="bottom-right" /></>
+export function SiteShell({ children }: { children: React.ReactNode }) {
+  return <><SiteHeader />{children}<SiteFooter /><Toaster theme="dark" position="bottom-right" /></>
 }
 
 export function BackToGallery({ href = '/' }: { href?: string }) {

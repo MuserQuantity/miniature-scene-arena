@@ -1,46 +1,43 @@
-import { MAX_COVER_BYTES } from './draft'
+import { constants } from 'node:fs'
+import { open } from 'node:fs/promises'
+import sharp from 'sharp'
+import { MAX_COVER_BYTES, SceneError } from './schema'
 
-export function downloadText(filename: string, contents: string, type = 'application/json') {
-  const url = URL.createObjectURL(new Blob([contents], { type: `${type};charset=utf-8` }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+export function isErrno(error: unknown, code: string) {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code
 }
 
-export async function resolveCover(source: string): Promise<string> {
-  if (!source) return ''
-  if (source === '/images/rainy-konbini.png') {
-    const response = await fetch(source)
-    if (!response.ok) throw new Error('无法读取内置封面，请重试或选择本地封面。')
-    return readCover(new File([await response.blob()], 'cover.png', { type: 'image/png' }))
+export async function readBoundedFile(filename: string, maximum: number) {
+  const file = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const stat = await file.stat()
+    if (!stat.isFile() || stat.size > maximum) throw new SceneError(500, 'STORAGE_INVALID', '场景存储文件不符合大小或格式要求。')
+    const data = await file.readFile()
+    if (data.byteLength > maximum) throw new SceneError(500, 'STORAGE_INVALID', '场景存储文件超过大小限制。')
+    return data
+  } finally {
+    await file.close()
   }
-  const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(source)
-  if (!match || match[2].length > Math.ceil(MAX_COVER_BYTES / 3) * 4) throw new Error('封面不是有效的本地图像，或超过 2 MB。')
-  const binary = atob(match[2])
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
-  return readCover(new File([bytes], 'cover', { type: match[1] }))
 }
 
-export async function readCover(file: File): Promise<string> {
-  if (file.size > MAX_COVER_BYTES) throw new Error('封面不能超过 2 MB。')
-  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('只支持 PNG、JPEG 和 WebP，不接受 SVG。')
-  const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer())
-  const png = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
-  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-  const webp = new TextDecoder().decode(bytes.slice(0, 4)) === 'RIFF' && new TextDecoder().decode(bytes.slice(8, 12)) === 'WEBP'
-  if (!(png && file.type === 'image/png' || jpeg && file.type === 'image/jpeg' || webp && file.type === 'image/webp')) throw new Error('文件内容与图像格式不符。')
-  const bitmap = await createImageBitmap(file)
-  const valid = bitmap.width > 0 && bitmap.height > 0 && bitmap.width <= 8192 && bitmap.height <= 8192
-  bitmap.close()
-  if (!valid) throw new Error('图像长宽不能超过 8192 像素。')
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('无法读取图像。'))
-    reader.onerror = () => reject(new Error('无法读取图像。'))
-    reader.readAsDataURL(file)
-  })
+export async function normalizeCover(source: string): Promise<Buffer | undefined> {
+  if (!source) return undefined
+  const match = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(source)
+  if (!match) throw new SceneError(422, 'INVALID_COVER', '封面只接受 PNG、JPEG 或 WebP data URL。')
+  const input = Buffer.from(match[2], 'base64')
+  if (!input.length || input.length > MAX_COVER_BYTES || input.toString('base64').replace(/=+$/, '') !== match[2].replace(/=+$/, '')) {
+    throw new SceneError(422, 'INVALID_COVER', '封面不是有效的 base64 图像，或超过 2 MiB。')
+  }
+  try {
+    const image = sharp(input, { limitInputPixels: 8192 * 8192, failOn: 'warning' })
+    const metadata = await image.metadata()
+    if (metadata.format !== match[1] || !metadata.width || !metadata.height || metadata.width > 8192 || metadata.height > 8192 || (metadata.pages ?? 1) > 1) {
+      throw new Error('Invalid image format or dimensions')
+    }
+    const output = await image.rotate().resize({ width: 1440, height: 1000, fit: 'inside', withoutEnlargement: true }).webp({ quality: 85 }).toBuffer()
+    if (output.length > MAX_COVER_BYTES) throw new Error('Normalized image is too large')
+    return output
+  } catch {
+    throw new SceneError(422, 'INVALID_COVER', '封面无法解码，格式不匹配、包含动画或尺寸超过 8192 像素。')
+  }
 }

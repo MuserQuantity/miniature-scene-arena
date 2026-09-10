@@ -85,11 +85,9 @@
   .scene-stage canvas { touch-action: none; }
   .metadata-row { @apply flex items-start justify-between gap-6 text-sm; }
   .metadata-row dt { @apply shrink-0 text-muted-foreground; }
-  .metadata-row dd { @apply text-right leading-relaxed; }
+  .metadata-row dd { @apply min-w-0 text-right leading-relaxed; overflow-wrap: anywhere; }
   .content-panel { @apply rounded-xl border bg-card/40 text-card-foreground; }
   .section-title { @apply text-lg font-medium tracking-tight text-balance; }
-  .admin-nav-link { @apply flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground; }
-  .admin-nav-link[aria-current='page'] { @apply bg-accent text-primary; }
   .reveal { animation: reveal-in 700ms both cubic-bezier(.2,.7,.2,1); }
   .reveal-late { animation: reveal-in 700ms 130ms both cubic-bezier(.2,.7,.2,1); }
 }

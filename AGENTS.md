@@ -1,7 +1,7 @@
 # Project guide
 
 - Use Node.js 22.18 or newer and pnpm 10.9.0.
-- Stack: Next.js App Router, React, TypeScript, Tailwind CSS, Base UI, and React Three Fiber.
+- Stack: Next.js App Router, React, TypeScript, Tailwind CSS, and Base UI. Scene programs are self-contained HTML.
 - Preserve the Chinese interface and existing dark visual style.
 
 ## Commands
@@ -10,24 +10,32 @@
 - Develop: `pnpm dev`; pass `--port 3001` if the default port is occupied.
 - Check: `pnpm check` runs ESLint, route type generation, TypeScript, and unit tests.
 - Build: `pnpm build`.
-- Browser tests: install Chromium with `pnpm exec playwright install chromium`, then run `pnpm build && pnpm test:e2e`. Tests start a production server on port 3100 and use software WebGL.
+- Browser tests: `pnpm exec playwright install chromium`, then `pnpm build && pnpm test:e2e`. Tests use port 3100, isolated scene storage, a test-only key, and software WebGL.
 - Dependency audit: `pnpm audit`.
+- Scene CLI: `pnpm scenes --help`; API reference and deployment instructions are in README.md.
+- After removing routes, old `.next/dev/types` may reference deleted files. Briefly starting the development server regenerates them; do not weaken TypeScript checks to hide stale generated types.
+- Stop temporary verification servers when finished unless the user explicitly requests a running preview.
 
-## Application boundaries
+## Scene management and security
 
-- Published scenes live in `lib/scenes/catalog.ts`; Three.js renderers live in `components/scenes/` and load client-side.
-- `/admin` is a public local-file workbench, not an authenticated backend. Draft edits do not update the gallery or persist after closing the page; users must export JSON files.
-- `/api/preview` only returns temporary sandboxed HTML. Preserve its CSP, opaque-origin iframe, no-store headers, and byte limits. Do not enable external network access or same-origin permissions for imported HTML.
-- Fonts and scene images are bundled locally; builds must not require Google Fonts downloads.
-- Set `SITE_URL` to the deployment origin before a production build for correct social metadata. It defaults to `http://localhost:3000` locally.
+- Use `.devin/skills/manage-scenes/SKILL.md` and its client for content operations. Do not hardcode scene data into application source.
+- `lib/scenes/model.ts` defines scene records; `lib/scenes/store.ts` reads the persistent catalog at request time. A fresh volume must start empty, without demo scenes.
+- Known legacy demo overrides are retained in storage for compatibility but excluded from public and management reads. Do not erase existing volume data during upgrades or hide unrecognized corrupt records.
+- `/admin` and `/api/preview` were removed. Do not restore a public editor or an anonymous write API.
+- Management endpoints under `/api/v1/scenes` require `X-API-Key`. Missing or weak server configuration fails closed. PATCH requires the version ETag in `If-Match` and rejects stale updates.
+- Never expose `SCENE_API_KEY` to client components, build arguments, metadata, URLs, logs, Git, or model context. Initialize an empty key through `pnpm scenes init-key`; never read private environment files into the conversation or rotate an existing key without authorization.
+- Uploaded HTML is data, never executable server-side code. Preserve the opaque-origin iframe, restrictive response CSP, no-store policy, and input limits. Do not add same-origin permissions, external network access, worker support, or server-side execution of uploaded projects.
+- Covers are decoded and normalized with Sharp. Keep the format, byte, pixel and animation checks.
+- Scene IDs and slugs remain stable. Published scenes use the HTML renderer and are managed through the API.
+- Storage uses a cross-process lock, atomic catalog replacement, and immutable content-addressed assets. Never reset corrupt storage to an empty catalog. Historical assets are retained until an explicitly authorized cleanup.
+- Public pages read runtime storage dynamically; additions must not require a Next.js rebuild. Fonts and application assets stay bundled locally.
 
 ## Container deployment
 
-- The Dockerfile enables `BUILD_STANDALONE=true` for a minimal, non-root production image. Normal `pnpm build` and `pnpm start` retain their existing behavior.
-- On a new server, copy `.env.example` to `.env` without overwriting existing settings. Real `.env` files are ignored by Git and excluded from the Docker build context.
-- Compose deploys only the application and joins an existing external Traefik network. It does not start Traefik, publish host ports, or mount the Docker socket.
-- Set `TRAEFIK_DOMAIN` to the hostname without a scheme. `SITE_URL` derives from it by default and is passed to both the image build and runtime; rebuild the image after changing the public origin.
-- `TRAEFIK_NETWORK`, `TRAEFIK_ENTRYPOINTS`, and `TRAEFIK_CERT_RESOLVER` must match the existing Traefik setup. The network and certificate resolver must already be configured on the proxy.
-- `TRAEFIK_ROUTER_NAME` names both the router and service and must be unique on the shared proxy. `TRAEFIK_MIDDLEWARES` accepts a comma-separated list such as `security@file,auth@docker`, or can be empty.
-- For plain HTTP, set `TRAEFIK_TLS=false`, use the HTTP entrypoint, clear `TRAEFIK_CERT_RESOLVER`, and set `SITE_URL` to an `http://` origin. HTTP-to-HTTPS redirects remain the responsibility of the existing proxy.
-- Validate: `docker compose config --quiet`. Deploy or update: `docker compose up -d --build`. Check health and logs: `docker compose ps` and `docker compose logs -f app`.
+- Docker enables `BUILD_STANDALONE=true`, runs as node, and stores scene data in `/app/data` on the `scene-data` named volume. Local storage defaults to `.scene-data`.
+- Private environment files, scene data, scratch files and skills are excluded from the image build context. The API key is passed at runtime only.
+- Compose reuses an existing external Traefik network without mounting the Docker socket or publishing host ports. Network, entrypoints and certificate resolver must already exist on the proxy.
+- `SCENE_API_URL` is the client's target; `SITE_URL` is the public origin used by the app. The server and client must use the same key. Never send real credentials to a test server; tests must override both target and key.
+- `SITE_URL` defaults from `TRAEFIK_DOMAIN`; changing the public origin requires a rebuild. API content updates do not.
+- Validate without printing secrets: `docker compose config --quiet`. Deploy: `docker compose up -d --build`. Inspect health/logs with `docker compose ps` and `docker compose logs -f app`.
+- Never delete the data volume, rotate production keys, or mutate public scene content as part of routine verification.

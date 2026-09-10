@@ -1,14 +1,13 @@
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
-import { SceneViewport } from '@/components/scenes/scene-viewport'
-import { findScene } from '@/lib/scenes/catalog'
+import { HtmlSceneViewport } from '@/components/scenes/html-scene-viewport'
+import { getSceneStore } from '@/lib/scenes/store'
 
+export const dynamic = 'force-dynamic'
 export const metadata: Metadata = { title: '沉浸观看', robots: { index: false, follow: true } }
 
-export default async function ImmersivePage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ view?: string; still?: string }> }) {
-  const { slug } = await params
-  const query = await searchParams
-  if (!findScene(slug)) notFound()
-  const view = query.view === 'street' || query.view === 'interior' ? query.view : 'overview'
-  return <main className="h-svh w-full overflow-hidden" aria-label="雨夜便利店沉浸观看"><SceneViewport view={view} paused={query.still === '1'} /></main>
+export default async function ImmersivePage({ params }: { params: Promise<{ slug: string }> }) {
+  const scene = await getSceneStore().findBySlug((await params).slug)
+  if (!scene) notFound()
+  return <main className="h-svh w-full overflow-hidden" aria-label={`${scene.title}沉浸观看`}><HtmlSceneViewport scene={scene} /></main>
 }

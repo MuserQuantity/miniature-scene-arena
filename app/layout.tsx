@@ -7,17 +7,16 @@ const geistSans = localFont({ src: '../public/fonts/geist.woff', variable: '--fo
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.SITE_URL || 'http://localhost:3000'),
   title: { default: '隅境 · AI 场景档案', template: '%s · 隅境' },
-  description: '收藏由提示词生长出的微小世界。走进雨夜便利店，漫游真实可交互的三维场景，阅读每个作品的创作记录。',
+  description: '收藏由提示词生长出的微小世界。探索可交互的场景作品，阅读提示词、使用的模型和每一次创作的记录。',
   applicationName: '隅境',
-  keywords: ['AI 场景', '3D 作品集', '微缩场景', '雨夜便利店', 'Three.js'],
+  keywords: ['AI 场景', '交互作品集', '微缩场景', '创作记录'],
   openGraph: {
     title: '隅境 · 每一个想象，都有一处归所',
     description: '一个关于 AI、代码与微小世界的场景档案。',
     locale: 'zh_CN',
     type: 'website',
-    images: [{ url: '/images/rainy-konbini.png', width: 1440, height: 1000, alt: '雨夜便利店三维作品实景' }],
   },
-  twitter: { card: 'summary_large_image' },
+  twitter: { card: 'summary' },
 }
 
 export const viewport: Viewport = {

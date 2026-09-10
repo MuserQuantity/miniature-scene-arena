@@ -10,3 +10,8 @@ playwright-report
 coverage
 .DS_Store
 AGENTS.md
+.devin
+.scene-data
+.scene-work
+tests
+playwright.config.ts
