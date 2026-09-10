@@ -1,0 +1,37 @@
+name: ${COMPOSE_PROJECT_NAME:-miniature-scene-arena}
+
+services:
+  app:
+    image: ${COMPOSE_PROJECT_NAME:-miniature-scene-arena}:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SITE_URL: ${SITE_URL:?Set SITE_URL in .env}
+    restart: unless-stopped
+    init: true
+    environment:
+      SITE_URL: ${SITE_URL:?Set SITE_URL in .env}
+    expose:
+      - "3000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=${TRAEFIK_ENABLED:-true}"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:?Set TRAEFIK_NETWORK in .env}"
+      - "traefik.http.routers.${TRAEFIK_ROUTER_NAME:-miniature-scene-arena}.rule=Host(`${TRAEFIK_DOMAIN:?Set TRAEFIK_DOMAIN in .env}`)"
+      - "traefik.http.routers.${TRAEFIK_ROUTER_NAME:-miniature-scene-arena}.entrypoints=${TRAEFIK_ENTRYPOINTS:-websecure}"
+      - "traefik.http.routers.${TRAEFIK_ROUTER_NAME:-miniature-scene-arena}.tls=${TRAEFIK_TLS:-true}"
+      - "traefik.http.routers.${TRAEFIK_ROUTER_NAME:-miniature-scene-arena}.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-}"
+      - "traefik.http.routers.${TRAEFIK_ROUTER_NAME:-miniature-scene-arena}.middlewares=${TRAEFIK_MIDDLEWARES:-}"
+      - "traefik.http.routers.${TRAEFIK_ROUTER_NAME:-miniature-scene-arena}.service=${TRAEFIK_ROUTER_NAME:-miniature-scene-arena}"
+      - "traefik.http.services.${TRAEFIK_ROUTER_NAME:-miniature-scene-arena}.loadbalancer.server.port=3000"
+
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:?Set TRAEFIK_NETWORK in .env}

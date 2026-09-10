@@ -1,0 +1,116 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+@custom-variant data-open (&:where([data-state='open'], [data-open]:not([data-open='false'])));
+@custom-variant data-closed (&:where([data-state='closed'], [data-closed]:not([data-closed='false'])));
+@custom-variant data-checked (&:where([data-state='checked'], [data-checked]:not([data-checked='false'])));
+@custom-variant data-disabled (&:where([data-disabled]:not([data-disabled='false'])));
+@custom-variant data-active (&:where([data-state='active'], [data-active]:not([data-active='false'])));
+@custom-variant data-horizontal (&:where([data-orientation='horizontal']));
+@custom-variant data-vertical (&:where([data-orientation='vertical']));
+
+@theme inline {
+  --font-sans: var(--font-geist-sans), 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root, .dark {
+  color-scheme: dark;
+  --background: #0c1216;
+  --foreground: #e6edef;
+  --card: #151e24;
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --primary: #94c9c5;
+  --primary-foreground: var(--background);
+  --secondary: var(--card);
+  --secondary-foreground: var(--foreground);
+  --muted: var(--card);
+  --muted-foreground: #879aa5;
+  --accent: color-mix(in srgb, var(--primary) 12%, var(--card));
+  --accent-foreground: var(--foreground);
+  --destructive: var(--foreground);
+  --border: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --input: color-mix(in srgb, var(--foreground) 14%, transparent);
+  --ring: var(--primary);
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html { scroll-behavior: smooth; scroll-padding-top: 6rem; }
+  body { @apply bg-background text-foreground font-sans antialiased; }
+  button:not(:disabled), [role='button']:not(:disabled) { cursor: pointer; }
+  a, button, input, textarea { -webkit-tap-highlight-color: transparent; }
+  ::selection { background: var(--primary); color: var(--primary-foreground); }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 5px; }
+}
+
+@layer components {
+  .page-shell { @apply mx-auto w-full max-w-7xl px-6 md:px-10 xl:px-12; }
+  .eyebrow { @apply text-sm font-medium tracking-widest text-primary; }
+  .quiet-link { @apply text-sm text-muted-foreground transition-colors hover:text-foreground; }
+  .gallery-feature { @apply overflow-hidden rounded-xl border bg-card text-card-foreground; }
+  .feature-image { @apply relative block overflow-hidden bg-background text-foreground; }
+  .feature-image img { transition: transform 900ms cubic-bezier(.2,.6,.3,1); }
+  .feature-image:hover img { transform: scale(1.035); }
+  .scene-stage { @apply relative overflow-hidden bg-card text-card-foreground; }
+  .scene-stage canvas { touch-action: none; }
+  .metadata-row { @apply flex items-start justify-between gap-6 text-sm; }
+  .metadata-row dt { @apply shrink-0 text-muted-foreground; }
+  .metadata-row dd { @apply text-right leading-relaxed; }
+  .content-panel { @apply rounded-xl border bg-card/40 text-card-foreground; }
+  .section-title { @apply text-lg font-medium tracking-tight text-balance; }
+  .admin-nav-link { @apply flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground; }
+  .admin-nav-link[aria-current='page'] { @apply bg-accent text-primary; }
+  .reveal { animation: reveal-in 700ms both cubic-bezier(.2,.7,.2,1); }
+  .reveal-late { animation: reveal-in 700ms 130ms both cubic-bezier(.2,.7,.2,1); }
+}
+
+.scene-stage:fullscreen { width: 100vw; height: 100dvh; aspect-ratio: auto; border-radius: 0; }
+
+[data-slot='button'] { min-height: 2.5rem; }
+[data-slot='badge'] { font-weight: 400; }
+[data-slot='input-group'], [data-slot='select-trigger'], [data-slot='input'] { min-height: 2.5rem; }
+[data-slot='tabs-trigger'] { min-height: 2.5rem; }
+[data-slot='tabs-list'] { min-height: 2.75rem; }
+[data-slot='dialog-overlay'] { background: color-mix(in srgb, var(--background) 75%, transparent); }
+[data-slot='dialog-description'], [data-slot='alert-description'] { line-height: 1.65; }
+[data-sonner-toaster] { font-family: var(--font-sans) !important; }
+
+@keyframes reveal-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
