@@ -15,6 +15,7 @@
 - Scene CLI: `pnpm scenes --help`; API reference and deployment instructions are in README.md.
 - After removing routes, old `.next/dev/types` may reference deleted files. Briefly starting the development server regenerates them; do not weaken TypeScript checks to hide stale generated types.
 - Stop temporary verification servers when finished unless the user explicitly requests a running preview.
+- Scene visual QA must check moving-object clearances over the full animation cycle and inspect camera sweeps for coplanar flicker and transparent overlaps. Freeze time and camera for before/after comparisons; passing JavaScript, network, and interaction checks alone is insufficient.
 
 ## Scene management and security
 
