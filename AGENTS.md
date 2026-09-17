@@ -20,7 +20,11 @@
 ## Scene management and security
 
 - Use `.devin/skills/manage-scenes/SKILL.md` and its client for content operations. Do not hardcode scene data into application source.
-- `lib/scenes/model.ts` defines scene records; `lib/scenes/store.ts` reads the persistent catalog at request time. A fresh volume must start empty, without demo scenes.
+- `lib/scenes/model.ts` defines scene and prompt records; `lib/scenes/store.ts` reads the persistent catalog at request time. A fresh volume must start empty, without demo scenes.
+- Prompts (题目) are first-class records: one prompt groups every scene generated from the same brief, and scenes reference them through `promptId`. `/prompts` shows the prompt × (model, agent) matrix and `/prompts/{slug}` runs same-prompt scenes side by side. Scene titles must not embed model or agent names; the UI renders them as badges.
+- Public pages receive `SceneSummary`/`PromptSummary` (no prompt text, notes or parameters) to keep the gallery payload small; detail pages load full records.
+- Gallery filters and paging use `history.pushState`/`replaceState` so browser back/forward restores state; keep that behaviour when changing navigation.
+- Playwright wipes `test-results/` before every run; keep local preview data and scratch scripts in `.scene-work/` (gitignored and ESLint-ignored), never in `test-results/`.
 - Known legacy demo overrides are retained in storage for compatibility but excluded from public and management reads. Do not erase existing volume data during upgrades or hide unrecognized corrupt records.
 - `/admin` and `/api/preview` were removed. Do not restore a public editor or an anonymous write API.
 - Management endpoints under `/api/v1/scenes` require `X-API-Key`. Missing or weak server configuration fails closed. PATCH requires the version ETag in `If-Match` and rejects stale updates.

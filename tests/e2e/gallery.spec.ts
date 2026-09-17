@@ -16,7 +16,7 @@ test('a fresh gallery has a real empty state with no demo content', async ({ pag
   await page.goto('/')
   await expect(page.getByRole('heading', { name: '微小世界，无尽想象。' })).toBeVisible()
   await expect(page.getByText('暂无公开场景')).toBeVisible()
-  await expect(page.getByRole('link', { name: '走进这个世界' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: /进入作品/ })).toHaveCount(0)
   await expect(page.getByRole('link', { name: '资料工作台' })).toHaveCount(0)
   await expect(page.locator('img')).toHaveCount(0)
   expect(await page.content()).not.toContain('雨夜便利店')
@@ -26,6 +26,8 @@ test('a fresh gallery has a real empty state with no demo content', async ({ pag
   await expect(page.getByText('暂无公开场景')).toBeVisible()
   const about = await request.get('/about')
   expect(await about.text()).not.toContain('rainy-konbini')
+  await page.goto('/prompts')
+  await expect(page.getByText('还没有登记题目')).toBeVisible()
 })
 
 test('gallery search and layout work with API-created scenes', async ({ page, request }) => {
@@ -33,16 +35,40 @@ test('gallery search and layout work with API-created scenes', async ({ page, re
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   await page.goto('/')
-  await expect(page.getByRole('link', { name: '走进这个世界' }).first()).toBeVisible()
+  await expect(page.getByRole('link', { name: /进入作品/ }).first()).toBeVisible()
   await expect(page.getByText('暂无公开场景')).toHaveCount(0)
-  await page.getByRole('button', { name: '紧凑视图' }).click()
-  await expect(page).toHaveURL(/layout=list/)
+  await page.getByRole('button', { name: '大图视图' }).click()
+  await expect(page).toHaveURL(/layout=feature/)
+  await expect(page.getByRole('link', { name: '走进这个世界' }).first()).toBeVisible()
   await page.getByRole('textbox', { name: '搜索场景' }).fill('不存在的场景')
   await expect(page.getByText('还没有找到这个世界')).toBeVisible()
   await page.getByRole('button', { name: '清除搜索' }).click()
-  await expect(page.getByRole('link', { name: '走进这个世界' }).first()).toBeVisible()
-  await expect(page).toHaveURL(/layout=list/)
+  await expect(page.getByRole('link', { name: /进入作品/ }).first()).toBeVisible()
+  await expect(page).toHaveURL(/layout=feature/)
   expect(errors).toEqual([])
+})
+
+test('pagination and filters use browser history and return to the top of the collection', async ({ page, request }) => {
+  const total = (await (await request.get('/api/v1/scenes', { headers: { 'X-API-Key': testApiKey } })).json()).scenes.length
+  for (let index = total; index < 13; index++) await addEntry(request)
+  await page.goto('/')
+  await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' }))
+  await page.getByRole('navigation', { name: '分页' }).last().getByRole('button', { name: '下一页' }).click()
+  await expect(page).toHaveURL(/page=2/)
+  await expect.poll(() => page.evaluate(() => {
+    const top = document.getElementById('collection')!.getBoundingClientRect().top
+    const maxScroll = document.documentElement.scrollHeight - window.innerHeight
+    return top > -40 && (top < 120 || Math.abs(window.scrollY - maxScroll) < 2)
+  })).toBe(true)
+  await page.goBack()
+  await expect(page).not.toHaveURL(/page=2/)
+  await expect(page.getByRole('button', { name: '第 1 页' }).first()).toHaveAttribute('aria-current', 'page')
+  await page.getByRole('combobox', { name: '按分类筛选' }).click()
+  await page.getByRole('option', { name: /回归测试/ }).click()
+  await expect(page).toHaveURL(/category=/)
+  await expect(page.getByText('分类：回归测试')).toBeVisible()
+  await page.getByRole('button', { name: '移除筛选 分类：回归测试' }).click()
+  await expect(page).not.toHaveURL(/category=/)
 })
 
 test('search terms matching filter defaults are not discarded', async ({ page, request }) => {
@@ -60,7 +86,7 @@ test('mobile navigation works without horizontal overflow', async ({ page, reque
   await addEntry(request)
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
-  await expect(page.getByRole('link', { name: '走进这个世界' }).first()).toBeVisible()
+  await expect(page.getByRole('link', { name: /进入作品/ }).first()).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await page.screenshot({ path: testInfo.outputPath('gallery-mobile.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('button', { name: '打开导航' }).click()
@@ -72,7 +98,7 @@ test('mobile navigation works without horizontal overflow', async ({ page, reque
 })
 
 test('removed demo, editor and preview paths return 404', async ({ request }) => {
-  for (const endpoint of ['/scenes/missing', '/scenes/rainy-night-konbini', '/scenes/rainy-night-konbini/play', '/images/rainy-konbini.png', '/admin', '/admin/scenes/new', '/admin/api', '/api/preview', '/api/v1/status', '/api/openapi']) {
+  for (const endpoint of ['/scenes/missing', '/scenes/rainy-night-konbini', '/scenes/rainy-night-konbini/play', '/images/rainy-konbini.png', '/admin', '/admin/scenes/new', '/admin/api', '/api/preview', '/api/v1/status', '/api/openapi', '/prompts/missing-prompt']) {
     expect((await request.get(endpoint)).status(), endpoint).toBe(404)
   }
   expect((await request.post('/api/preview', { data: '<html></html>' })).status()).toBe(404)

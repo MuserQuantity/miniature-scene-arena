@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { SiteShell } from '@/components/site-shell'
 import { SceneDetail } from '@/components/scenes/scene-detail'
+import { toSceneSummary } from '@/lib/scenes/model'
 import { getSceneStore } from '@/lib/scenes/store'
 
 export const dynamic = 'force-dynamic'
@@ -17,10 +18,11 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   }
 }
 
-export default async function ScenePage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ from?: string }> }) {
-  const scene = await getSceneStore().findBySlug((await params).slug)
+export default async function ScenePage({ params }: { params: Promise<{ slug: string }> }) {
+  const store = getSceneStore()
+  const scene = await store.findBySlug((await params).slug)
   if (!scene) notFound()
-  const query = await searchParams
-  const returnTo = typeof query.from === 'string' && query.from.length <= 2048 && (query.from === '/' || query.from.startsWith('/?')) ? query.from : '/'
-  return <SiteShell><SceneDetail scene={scene} returnTo={returnTo} /></SiteShell>
+  const prompt = scene.promptId ? await store.getPrompt(scene.promptId) : undefined
+  const siblings = prompt ? (await store.list()).filter((record) => record.promptId === prompt.id && record.id !== scene.id).map(toSceneSummary) : []
+  return <SiteShell><SceneDetail scene={scene} prompt={prompt} siblings={siblings} /></SiteShell>
 }

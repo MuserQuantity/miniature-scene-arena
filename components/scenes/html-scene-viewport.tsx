@@ -40,6 +40,6 @@ function HtmlSceneFrame({ src, title }: { src: string; title: string }) {
   </div>
 }
 
-export function HtmlSceneViewport({ scene, resetKey = 0 }: { scene: SceneRecord; resetKey?: number }) {
+export function HtmlSceneViewport({ scene, resetKey = 0 }: { scene: Pick<SceneRecord, 'id' | 'slug' | 'title' | 'version'>; resetKey?: number }) {
   return <HtmlSceneFrame key={`${scene.id}:${scene.version}:${resetKey}`} src={`/scenes/${scene.slug}/render?v=${scene.version}`} title={scene.title} />
 }

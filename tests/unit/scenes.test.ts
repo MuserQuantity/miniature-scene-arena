@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { formatSceneDate } from '../../lib/scenes/model'
-import { createSceneSchema, defaultSceneMetadata, MAX_HTML_BYTES, sceneRecordSchema, updateSceneSchema, validateHtml } from '../../lib/scenes/schema'
+import { comparePromptOrder, formatSceneDate, formatShortDate, toSceneSummary, type SceneRecord } from '../../lib/scenes/model'
+import { createPromptSchema, createSceneSchema, defaultSceneMetadata, MAX_HTML_BYTES, promptRecordSchema, sceneRecordSchema, updatePromptSchema, updateSceneSchema, validateHtml } from '../../lib/scenes/schema'
 import { hasSceneSandbox, sceneDocumentResponse } from '../../lib/scenes/sandbox'
 
 const html = '<!doctype html><html lang="zh-CN"><body>场景</body></html>'
@@ -54,6 +54,38 @@ test('HTML limits measure UTF-8 bytes', () => {
 test('public records exclude internal file pointers', () => {
   const record = sceneRecordSchema.parse({ ...fixture, htmlAsset: 'private-file' })
   assert.ok(!('htmlAsset' in record))
+})
+
+test('prompt references are validated and default to empty for older records', () => {
+  const legacy = Object.fromEntries(Object.entries(fixture).filter(([key]) => key !== 'promptId'))
+  assert.equal(sceneRecordSchema.parse(legacy).promptId, '')
+  assert.ok(createSceneSchema.safeParse({ ...input, promptId: 'prompt-1234' }).success)
+  assert.ok(createSceneSchema.safeParse({ ...input, promptId: '' }).success)
+  assert.equal(createSceneSchema.safeParse({ ...input, promptId: 'scene-1234' }).success, false)
+  assert.deepEqual(updateSceneSchema.parse({ promptId: '' }), { promptId: '' })
+})
+
+test('prompt schemas require a title, slug and body, and strip server fields on update', () => {
+  assert.ok(createPromptSchema.safeParse({ title: '题目', slug: 'prompt-slug', body: '正文' }).success)
+  assert.equal(createPromptSchema.safeParse({ title: '题目', slug: 'prompt-slug', body: ' ' }).success, false)
+  assert.equal(createPromptSchema.safeParse({ title: '题目', slug: 'Bad Slug', body: '正文' }).success, false)
+  assert.equal(createPromptSchema.safeParse({ title: '题目', slug: 'prompt-slug', body: '正文', id: 'prompt-x' }).success, false)
+  assert.equal(updatePromptSchema.safeParse({}).success, false)
+  for (const key of ['id', 'slug', 'version', 'createdAt']) assert.equal(updatePromptSchema.safeParse({ [key]: 'forbidden' }).success, false)
+  const record = promptRecordSchema.parse({ id: 'prompt-1', slug: 'prompt-slug', title: '题目', number: '01', summary: '', category: '未分类', tags: ['a', 'a'], body: '正文', notes: '', createdAt: '2026-09-10', updatedAt: '2026-09-10', version: 1, extra: 'dropped' })
+  assert.deepEqual(record.tags, ['a'])
+  assert.ok(!('extra' in record))
+})
+
+test('summaries drop heavy fields and prompts sort by number then title', () => {
+  const scene: SceneRecord = { ...fixture, renderer: 'html', prompt: 'x'.repeat(5000), notes: 'y'.repeat(5000), description: '描述', parameters: { seed: 1 } }
+  const summary = toSceneSummary(scene)
+  assert.ok(!('prompt' in summary) && !('notes' in summary) && !('parameters' in summary))
+  assert.equal(summary.description, '描述')
+  assert.equal(summary.slug, 'published-scene')
+  const order = [{ number: '10', title: 'b' }, { number: '2', title: 'a' }, { number: '', title: '乙' }, { number: '', title: '甲' }].sort(comparePromptOrder)
+  assert.deepEqual(order.map((item) => item.number || item.title), ['甲', '乙', '2', '10'])
+  assert.equal(formatShortDate('2026-09-10T16:00:00.000Z'), '2026.09.10')
 })
 
 test('HTML responses preserve the restrictive opaque-origin sandbox', () => {

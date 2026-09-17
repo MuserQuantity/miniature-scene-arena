@@ -79,6 +79,28 @@ test('create defaults to a local dry-run without exposing credentials or HTML', 
   assert.ok(!result.stdout.includes('private-source-marker'))
 })
 
+test('prompt commands validate locally and dry-run without network access', async () => {
+  const metadata = path.join(directory, 'prompt.json')
+  const body = path.join(directory, 'prompt.md')
+  await writeFile(metadata, JSON.stringify({ title: '本地题目', slug: 'local-prompt', number: '01' }))
+  await writeFile(body, '# 01 本地题目\n\nprivate-prompt-marker')
+  const result = await run(['prompts', 'create', '--metadata', metadata, '--body', body], 'http://127.0.0.1:1')
+  const plan = JSON.parse(result.stdout)
+  assert.equal(plan.mode, 'dry-run')
+  assert.equal(plan.resource, 'prompts')
+  assert.deepEqual(plan.fields.sort(), ['body', 'number', 'slug', 'title'])
+  assert.ok(!result.stdout.includes('private-prompt-marker'))
+  await writeFile(metadata, JSON.stringify({ title: '缺少正文', slug: 'no-body' }))
+  await assert.rejects(run(['prompts', 'create', '--metadata', metadata], 'http://127.0.0.1:1'), /正文/)
+  await writeFile(metadata, JSON.stringify({ title: '不允许的字段', slug: 'bad-field', body: '正文', html: '<html></html>' }))
+  await assert.rejects(run(['prompts', 'create', '--metadata', metadata], 'http://127.0.0.1:1'), /不允许的字段/)
+  await assert.rejects(run(['prompts', 'get', 'scene-not-a-prompt'], 'http://127.0.0.1:1'), /题目 ID/)
+  await assert.rejects(run(['prompts', 'code', 'prompt-x'], 'http://127.0.0.1:1'), /未知命令/)
+  const sceneMetadata = path.join(directory, 'scene.json')
+  await writeFile(sceneMetadata, JSON.stringify({ promptId: 'not-a-prompt-id' }))
+  await assert.rejects(run(['update', 'scene-test', '--version', '1', '--metadata', sceneMetadata], 'http://127.0.0.1:1'), /promptId/)
+})
+
 test('confirmed updates send X-API-Key and the requested If-Match version', async () => {
   let received: { key?: string; version?: string; body?: unknown; method?: string } = {}
   server = createServer(async (request, response) => {

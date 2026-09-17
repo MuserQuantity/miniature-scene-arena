@@ -116,6 +116,53 @@ test('invalid images do not publish a half-created scene', async () => {
   assert.equal((await store.list()).length, 0)
 })
 
+test('prompts group scenes, inherit category and reject unknown references', async () => {
+  const prompt = await store.createPrompt({ slug: 'sakura-station', title: '樱花铁路小站', number: '01', category: '旅途驿站', tags: ['春日'], body: '# 01 樱花铁路小站\n\n请制作场景。' })
+  assert.match(prompt.id, /^prompt-[a-f0-9-]+$/)
+  assert.equal(prompt.version, 1)
+  await assert.rejects(store.createPrompt({ slug: 'sakura-station', title: '重复地址', body: '正文' }), { status: 409 })
+  await assert.rejects(store.createPrompt({ slug: 'empty-body', title: '缺少正文', body: '  ' }))
+  await assert.rejects(store.create({ slug: 'orphan', title: '引用不存在的题目', html, promptId: 'prompt-missing' }), { status: 422 })
+  const first = await store.create({ slug: 'sakura-gpt', title: '樱花铁路小站', html, promptId: prompt.id, model: 'GPT', agent: 'Devin CLI' })
+  assert.equal(first.category, '旅途驿站')
+  assert.deepEqual(first.tags, ['春日'])
+  const second = await store.create({ slug: 'sakura-opus', title: '樱花铁路小站', html, promptId: prompt.id, category: '自定分类', model: 'Opus', agent: 'Claude Code' })
+  assert.equal(second.category, '自定分类')
+  const snapshot = await store.snapshot()
+  assert.deepEqual(snapshot.prompts.map((record) => record.id), [prompt.id])
+  assert.deepEqual(snapshot.scenes.filter((scene) => scene.promptId === prompt.id).map((scene) => scene.slug).sort(), ['sakura-gpt', 'sakura-opus'])
+  assert.equal((await store.findPromptBySlug('sakura-station'))?.id, prompt.id)
+  const updated = await store.updatePrompt(prompt.id, { summary: '春日车站', tags: ['春日', '铁路'] }, 1)
+  assert.equal(updated.version, 2)
+  assert.equal(updated.body, prompt.body)
+  await assert.rejects(store.updatePrompt(prompt.id, { title: '过期' }, 1), { status: 412 })
+  await assert.rejects(store.updatePrompt(prompt.id, { slug: 'changed' }, 2))
+  await assert.rejects(store.update(first.id, { promptId: 'prompt-missing' }, 1), { status: 422 })
+  const detached = await store.update(first.id, { promptId: '' }, 1)
+  assert.equal(detached.promptId, '')
+  assert.equal((await store.get(second.id))?.promptId, prompt.id)
+})
+
+test('version 1 catalogs without prompts stay readable and are upgraded in place', async () => {
+  const scene = await store.create({ slug: 'legacy-scene', title: '旧格式场景', html })
+  const filename = path.join(directory, 'catalog.json')
+  const catalog = JSON.parse(await readFile(filename, 'utf8'))
+  delete catalog.prompts
+  catalog.formatVersion = 1
+  for (const record of catalog.scenes) delete record.promptId
+  await writeFile(filename, JSON.stringify(catalog))
+  assert.equal((await store.get(scene.id))?.promptId, '')
+  assert.deepEqual(await store.listPrompts(), [])
+  const prompt = await store.createPrompt({ slug: 'first-prompt', title: '第一个题目', body: '正文' })
+  const persisted = JSON.parse(await readFile(filename, 'utf8'))
+  assert.equal(persisted.formatVersion, 2)
+  assert.equal(persisted.scenes.length, 1)
+  assert.equal(persisted.prompts[0].id, prompt.id)
+  assert.equal(persisted.scenes[0].id, scene.id)
+  assert.equal(persisted.scenes[0].version, 1)
+  assert.equal((await store.get(scene.id))?.title, '旧格式场景')
+})
+
 test('corrupted storage is never silently replaced with an empty catalog', async () => {
   await writeFile(path.join(directory, 'catalog.json'), 'broken-json')
   await assert.rejects(store.list())

@@ -6,7 +6,8 @@
 
 ## 功能与边界
 
-- 展厅支持搜索、动态分类、模型/Agent 筛选及布局切换。
+- 展厅支持搜索、动态分类、模型/Agent 筛选、排序和网格/大图布局切换；筛选和翻页写入浏览历史，可用浏览器后退恢复。
+- 数据分为「题目」和「作品」：题目是一份可复用的提示词，作品是某个模型与 Agent 对题目的一次实现。`/prompts` 以矩阵展示每个题目已有哪些模型版本，`/prompts/{slug}` 可并排运行同题作品进行对比。
 - 正式版本不附带演示作品。新数据卷从空展厅开始，只展示通过 API 收录的场景。
 - 新增作品使用资源内嵌的单文件 HTML，可通过 API 新建、修改代码、封面和资料。提交成功后刷新页面即可看到，不需要重建镜像。
 - 已移除旧工作台、网页编辑器和匿名预览接口，`/admin` 与 `/api/preview` 返回 404。
@@ -56,20 +57,33 @@ skill 位于 `.devin/skills/manage-scenes/SKILL.md`，可以在 Devin 中调用 
 pnpm scenes list
 pnpm scenes get scene-id
 pnpm scenes code scene-id --out current-scene.html
+pnpm scenes prompts list
+pnpm scenes prompts get prompt-id
 ```
 
-准备元数据 JSON，例如：
+同一份提示词会被多个模型各跑一次，因此先登记题目，再把每次实现作为作品关联上去：
+
+```sh
+pnpm scenes prompts create --metadata prompt.json --body prompt.md
+pnpm scenes prompts create --metadata prompt.json --body prompt.md --confirm
+```
+
+题目元数据的 `title`、`slug` 必填，正文来自 `--body` 或 `body` 字段；可选 `number`（序号）、`summary`、`category`、`tags`、`notes`。作品元数据通过 `promptId` 引用题目，例如：
 
 ```json
 {
   "title": "林间温室",
-  "slug": "forest-greenhouse",
-  "category": "建筑与空间",
-  "tags": ["自然", "微缩世界"],
-  "prompt": "在这里填写实际使用的提示词",
+  "slug": "forest-greenhouse-opus-5-2-claude-code",
+  "promptId": "prompt-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "model": "Claude Opus 5.2",
+  "thinking": "max",
+  "agent": "Claude Code",
+  "prompt": "在这里填写这次实际使用的提示词",
   "promptSource": "原始提示词"
 }
 ```
+
+作品标题只写作品名，模型与 Agent 由页面徽标显示；未提供 `category`/`tags` 时继承题目的值。
 
 先预演，再确认发布。封面可选，省略时网站会显示「暂无封面」：
 
@@ -98,8 +112,14 @@ pnpm scenes update scene-id --version 2 --metadata patch.json --html scene.html 
 | GET | `/api/v1/scenes/{id}` | 返回当前 `scene`、公开 `url` 和 `ETag` |
 | PATCH | `/api/v1/scenes/{id}` | 局部修改，必须携带 GET 返回的 `If-Match`，例如 `"2"` |
 | GET | `/api/v1/scenes/{id}/code` | 下载纯文本 HTML 源码及其对应版本 ETag |
+| GET | `/api/v1/prompts` | 返回 `{ "prompts": [...] }` |
+| POST | `/api/v1/prompts` | 新建题目，返回 201、`prompt`、公开 `url`、`Location` 和 `ETag` |
+| GET | `/api/v1/prompts/{id}` | 返回 `prompt`、已关联的 `scenes` 摘要、公开 `url` 和 `ETag` |
+| PATCH | `/api/v1/prompts/{id}` | 局部修改题目，必须携带 `If-Match` |
 
-新建必填 `title`、`slug`、`html`。可选资料字段为 `subtitle`、`description`、`category`、`tags`、`prompt`、`promptSource`、`model`、`modelVersion`、`thinking`、`agent`、`agentVersion`、`parameters`、`notes`。封面字段 `cover` 接受 PNG/JPEG/WebP base64 data URL，空字符串表示清除封面。
+新建作品必填 `title`、`slug`、`html`。可选资料字段为 `subtitle`、`description`、`category`、`tags`、`promptId`、`prompt`、`promptSource`、`model`、`modelVersion`、`thinking`、`agent`、`agentVersion`、`parameters`、`notes`。`promptId` 必须是已存在的题目 ID，空字符串表示不关联。封面字段 `cover` 接受 PNG/JPEG/WebP base64 data URL，空字符串表示清除封面。
+
+新建题目必填 `title`、`slug`、`body`；可选 `number`、`summary`、`category`、`tags`、`notes`。题目 slug 创建后不可修改，没有删除接口。
 
 修改可提交上述资料、HTML 和封面的子集；未提交字段保持不变，`parameters` 等对象字段提交后整体替换。ID、slug、renderer、创建时间和版本不可直接修改。所有正式场景统一使用自包含 HTML，代码修改通过 `html` 字段提交。
 
@@ -110,7 +130,7 @@ pnpm scenes update scene-id --version 2 --metadata patch.json --html scene.html 
 
 常见状态码：401 密钥不正确；404 场景不存在；409 地址重复或目录容量不足；412 版本冲突；413 请求过大；415 内容类型错误；422 字段或图像校验失败；428 缺少版本条件；500 存储异常；503 密钥未配置或存储忙。
 
-公开路由 `/scenes/{slug}`、`/scenes/{slug}/play`、`/scenes/{slug}/render` 和 `/scenes/{slug}/cover` 不需要密钥。封面字段返回含内容哈希的 URL，应直接使用返回值，不手工拼接；仅修改资料不会改变封面 URL。HTML 只能通过带沙箱策略的渲染路由交付，管理下载接口不作为可执行页面使用。
+公开路由 `/scenes/{slug}`、`/scenes/{slug}/play`、`/scenes/{slug}/render`、`/scenes/{slug}/cover`、`/prompts` 和 `/prompts/{slug}` 不需要密钥。封面字段返回含内容哈希的 URL，应直接使用返回值，不手工拼接；仅修改资料不会改变封面 URL。HTML 只能通过带沙箱策略的渲染路由交付，管理下载接口不作为可执行页面使用。
 
 ## Docker Compose 与 Traefik
 
@@ -139,7 +159,7 @@ docker compose logs -f app
 
 容器非 root 运行，带健康检查，不映射宿主机端口。密钥仅通过运行时环境传入，不进入构建参数或镜像层。改变程序或公开站点地址需要重建；通过 API 新增或修改场景不需要重建。
 
-场景存储使用 `scene-data` 命名卷，包含 `catalog.json` 和 `assets/`。目录更新采用跨进程锁和原子替换，资源以内容哈希保存，避免并发写入产生半更新记录。旧资源暂时保留，不自动清理；备份和迁移时应保存整个卷。不要执行会删除数据卷的命令，恢复时必须保证容器的 node 用户可读写数据目录。
+场景存储使用 `scene-data` 命名卷，包含 `catalog.json` 和 `assets/`。目录 `formatVersion` 为 2（含 `prompts` 数组）；旧的版本 1 目录可直接读取，首次写入时原地升级，旧场景记录保留不变。目录更新采用跨进程锁和原子替换，资源以内容哈希保存，避免并发写入产生半更新记录。旧资源暂时保留，不自动清理；备份和迁移时应保存整个卷。不要执行会删除数据卷的命令，恢复时必须保证容器的 node 用户可读写数据目录。
 
 ## 检查与结构
 
@@ -155,9 +175,10 @@ pnpm audit
 
 | 目录 | 职责 |
 | --- | --- |
-| `app/` | 展厅页面、场景资源路由和管理 API |
-| `components/gallery/` | 搜索、筛选和场景卡片 |
+| `app/` | 展厅、题目页面、场景资源路由和管理 API |
+| `components/gallery/` | 搜索、筛选、分页和场景卡片 |
 | `components/scenes/` | 隔离 HTML 观看器与详情 |
+| `components/prompts/` | 题目矩阵与同题作品对比 |
 | `components/ui/` | 通用 UI 组件 |
 | `lib/scenes/` | 场景模型、校验、鉴权、文件处理、持久化和沙箱策略 |
 | `.devin/skills/manage-scenes/` | 场景管理 skill 与安全调用脚本 |

@@ -8,7 +8,9 @@ import { pathToFileURL } from 'node:url'
 const MAX_HTML_BYTES = 4 * 1024 * 1024 - 16 * 1024
 const MAX_COVER_BYTES = 2 * 1024 * 1024
 const MAX_BODY_BYTES = 8 * 1024 * 1024
-const metadataFields = new Set(['title', 'slug', 'subtitle', 'description', 'category', 'tags', 'prompt', 'promptSource', 'model', 'modelVersion', 'thinking', 'agent', 'agentVersion', 'parameters', 'notes'])
+const MAX_PROMPT_BODY_BYTES = 256 * 1024
+const metadataFields = new Set(['title', 'slug', 'subtitle', 'description', 'category', 'tags', 'promptId', 'prompt', 'promptSource', 'model', 'modelVersion', 'thinking', 'agent', 'agentVersion', 'parameters', 'notes'])
+const promptFields = new Set(['title', 'slug', 'number', 'summary', 'category', 'tags', 'body', 'notes'])
 let redactionKey = process.env.SCENE_API_KEY ?? ''
 
 const help = `Scene management
@@ -20,6 +22,14 @@ pnpm scenes code <id> --out <new-file.html> [--config .env]
 pnpm scenes create --metadata <metadata.json> --html <scene.html> [--cover <cover.png>] [--confirm]
 pnpm scenes update <id> --version <version> [--metadata <patch.json>] [--html <scene.html>] [--cover <cover.png> | --clear-cover] [--confirm]
 
+Prompt (题目) management — a prompt groups every scene generated from the same brief:
+
+pnpm scenes prompts list [--config .env]
+pnpm scenes prompts get <prompt-id> [--config .env]
+pnpm scenes prompts create --metadata <prompt.json> [--body <prompt.md>] [--confirm]
+pnpm scenes prompts update <prompt-id> --version <version> [--metadata <patch.json>] [--body <prompt.md>] [--confirm]
+
+Scene metadata may reference a prompt with "promptId"; the server rejects unknown IDs.
 Without --confirm, create/update only validate local files and print a plan.
 The client reads SCENE_API_URL (or SITE_URL) and SCENE_API_KEY from the environment or --config.
 API keys are never accepted as command-line arguments or printed.
@@ -114,14 +124,36 @@ async function localFile(filename, maximum) {
   return contents
 }
 
-async function payloadFor(command, values) {
-  let metadata = {}
-  if (values.metadata) {
-    try { metadata = JSON.parse((await localFile(values.metadata, 256 * 1024)).toString('utf8').replace(/^\uFEFF/, '')) }
-    catch { throw new Error('元数据必须是小于 256 KiB 的有效 JSON 文件。') }
-    if (!metadata || Array.isArray(metadata) || typeof metadata !== 'object') throw new Error('元数据必须是 JSON 对象。')
-    if (Object.keys(metadata).some((name) => !metadataFields.has(name) || command === 'update' && name === 'slug')) throw new Error('元数据包含不允许的字段；ID、地址和版本不能通过修改操作更改。')
+async function metadataFile(filename, allowed, command) {
+  let metadata
+  try { metadata = JSON.parse((await localFile(filename, 256 * 1024)).toString('utf8').replace(/^\uFEFF/, '')) }
+  catch { throw new Error('元数据必须是小于 256 KiB 的有效 JSON 文件。') }
+  if (!metadata || Array.isArray(metadata) || typeof metadata !== 'object') throw new Error('元数据必须是 JSON 对象。')
+  if (Object.keys(metadata).some((name) => !allowed.has(name) || command === 'update' && name === 'slug')) throw new Error('元数据包含不允许的字段；ID、地址和版本不能通过修改操作更改。')
+  return metadata
+}
+
+function finishPayload(payload) {
+  if (!Object.keys(payload).length) throw new Error('没有需要提交的修改。')
+  const encoded = JSON.stringify(payload)
+  if (Buffer.byteLength(encoded) > MAX_BODY_BYTES) throw new Error('完整请求不能超过 8 MiB。')
+  if (redactionKey && encoded.includes(redactionKey)) throw new Error('内容中出现了管理 API 密钥，已阻止上传。')
+  return payload
+}
+
+async function promptPayloadFor(command, values) {
+  if (values.html || values.cover || values['clear-cover']) throw new Error('题目不接受 HTML 或封面；请使用 --metadata 与 --body。')
+  const payload = values.metadata ? await metadataFile(values.metadata, promptFields, command) : {}
+  if (values.body) payload.body = new TextDecoder('utf-8', { fatal: true }).decode(await localFile(values.body, MAX_PROMPT_BODY_BYTES))
+  if (command === 'create' && (typeof payload.title !== 'string' || payload.title.trim().length < 2 || payload.title.length > 80 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(payload.slug ?? '') || typeof payload.body !== 'string' || !payload.body.trim())) {
+    throw new Error('新建题目需要标题、合法地址，以及正文（元数据 body 字段或 --body 文件）。')
   }
+  return finishPayload(payload)
+}
+
+async function payloadFor(command, values) {
+  if (values.body) throw new Error('--body 只用于题目；场景提示词请放在元数据的 prompt 字段。')
+  const metadata = values.metadata ? await metadataFile(values.metadata, metadataFields, command) : {}
   const payload = { ...metadata }
   if (values.html) {
     payload.html = new TextDecoder('utf-8', { fatal: true }).decode(await localFile(values.html, MAX_HTML_BYTES))
@@ -137,18 +169,15 @@ async function payloadFor(command, values) {
   if (command === 'create' && (typeof payload.title !== 'string' || payload.title.trim().length < 2 || payload.title.length > 80 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(payload.slug ?? '') || !payload.html)) {
     throw new Error('新建需要标题、合法地址，以及 --html 指定的完整 HTML。')
   }
-  if (!Object.keys(payload).length) throw new Error('没有需要提交的修改。')
-  const encoded = JSON.stringify(payload)
-  if (Buffer.byteLength(encoded) > MAX_BODY_BYTES) throw new Error('完整请求不能超过 8 MiB。')
-  if (redactionKey && encoded.includes(redactionKey)) throw new Error('场景内容中出现了管理 API 密钥，已阻止上传。')
-  return payload
+  if (payload.promptId !== undefined && payload.promptId !== '' && !/^prompt-[a-z0-9-]+$/.test(payload.promptId)) throw new Error('promptId 必须是 prompts list 返回的题目 ID，或空字符串表示解除关联。')
+  return finishPayload(payload)
 }
 
-async function apiRequest(config, endpoint, { method = 'GET', body, version, text = false } = {}) {
+async function apiRequest(config, pathname, { method = 'GET', body, version, text = false } = {}) {
   const headers = { 'X-API-Key': config.key }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (version !== undefined) headers['If-Match'] = `"${version}"`
-  const response = await fetch(new URL(`/api/v1/scenes${endpoint}`, config.origin), {
+  const response = await fetch(new URL(pathname, config.origin), {
     method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(30_000),
   })
   if (!response.ok) {
@@ -167,41 +196,50 @@ export async function main(args = process.argv.slice(2)) {
   let parsed
   try {
     parsed = parseArgs({ args, allowPositionals: true, options: {
-      'config': { type: 'string', default: '.env' }, metadata: { type: 'string' }, html: { type: 'string' }, cover: { type: 'string' },
+      'config': { type: 'string', default: '.env' }, metadata: { type: 'string' }, html: { type: 'string' }, cover: { type: 'string' }, body: { type: 'string' },
       version: { type: 'string' }, out: { type: 'string' }, 'clear-cover': { type: 'boolean' }, confirm: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     } })
   } catch { throw new Error('命令参数无效，请运行 pnpm scenes --help 查看用法。') }
   const { values, positionals } = parsed
   if (values.help || !positionals.length) { output(help); return }
-  const [command, id, ...extra] = positionals
-  if (extra.length || !['init-key', 'list', 'get', 'code', 'create', 'update'].includes(command)) throw new Error('未知命令或多余参数，请查看 --help。')
+  const resource = positionals[0] === 'prompts' ? 'prompts' : 'scenes'
+  const [command, id, ...extra] = resource === 'prompts' ? positionals.slice(1) : positionals
+  const commands = resource === 'prompts' ? ['list', 'get', 'create', 'update'] : ['init-key', 'list', 'get', 'code', 'create', 'update']
+  if (extra.length || !commands.includes(command)) throw new Error('未知命令或多余参数，请查看 --help。')
   if (command === 'init-key') { output(await initializeKey(values['config'])); return }
-  if (['get', 'code', 'update'].includes(command) && !/^scene-[a-z0-9-]+$/.test(id ?? '')) throw new Error('请提供 list/get 返回的场景 ID。')
-  if (['list', 'create'].includes(command) && id) throw new Error('此命令不接受场景 ID 参数。')
+  const idPattern = resource === 'prompts' ? /^prompt-[a-z0-9-]+$/ : /^scene-[a-z0-9-]+$/
+  if (['get', 'code', 'update'].includes(command) && !idPattern.test(id ?? '')) throw new Error(resource === 'prompts' ? '请提供 prompts list/get 返回的题目 ID。' : '请提供 list/get 返回的场景 ID。')
+  if (['list', 'create'].includes(command) && id) throw new Error('此命令不接受 ID 参数。')
   const writing = command === 'create' || command === 'update'
   const config = await configuration(values['config'], !writing || Boolean(values.confirm))
+  const base = `/api/v1/${resource}`
   if (command === 'list') {
-    const data = await apiRequest(config, '')
+    const data = await apiRequest(config, base)
+    if (resource === 'prompts') {
+      if (!Array.isArray(data.prompts)) throw new Error('接口返回的题目列表格式不正确。')
+      output({ prompts: data.prompts.map(({ id, slug, number, title, category, version, updatedAt }) => ({ id, slug, number, title, category, version, updatedAt })) })
+      return
+    }
     if (!Array.isArray(data.scenes)) throw new Error('接口返回的场景列表格式不正确。')
-    output({ scenes: data.scenes.map(({ id, slug, title, renderer, version, updatedAt }) => ({ id, slug, title, renderer, version, updatedAt })) })
+    output({ scenes: data.scenes.map(({ id, slug, title, promptId, model, agent, renderer, version, updatedAt }) => ({ id, slug, title, promptId, model, agent, renderer, version, updatedAt })) })
     return
   }
-  if (command === 'get') { output(await apiRequest(config, `/${encodeURIComponent(id)}`)); return }
+  if (command === 'get') { output(await apiRequest(config, `${base}/${encodeURIComponent(id)}`)); return }
   if (command === 'code') {
     if (!values.out) throw new Error('下载源码时必须使用 --out 指定新文件，不会覆盖已有文件。')
-    const result = await apiRequest(config, `/${encodeURIComponent(id)}/code`, { text: true })
+    const result = await apiRequest(config, `${base}/${encodeURIComponent(id)}/code`, { text: true })
     await writeFile(values.out, result.contents, { flag: 'wx', mode: 0o600 })
     output({ file: values.out, etag: result.etag })
     return
   }
   const version = values.version === undefined ? undefined : Number(values.version)
   if (command === 'update' && (!Number.isSafeInteger(version) || version < 1)) throw new Error('修改前请先 get，并用 --version 提供读取到的版本号。')
-  const body = await payloadFor(command, values)
+  const body = resource === 'prompts' ? await promptPayloadFor(command, values) : await payloadFor(command, values)
   if (!values.confirm) {
-    output({ mode: 'dry-run', operation: command, origin: config.origin, id, version, title: body.title, slug: body.slug, fields: Object.keys(body), htmlBytes: body.html ? Buffer.byteLength(body.html) : 0, requestBytes: Buffer.byteLength(JSON.stringify(body)), message: '尚未提交。确认目标与内容后添加 --confirm。' })
+    output({ mode: 'dry-run', resource, operation: command, origin: config.origin, id, version, title: body.title, slug: body.slug, promptId: body.promptId, fields: Object.keys(body), htmlBytes: body.html ? Buffer.byteLength(body.html) : 0, bodyBytes: body.body ? Buffer.byteLength(body.body) : 0, requestBytes: Buffer.byteLength(JSON.stringify(body)), message: '尚未提交。确认目标与内容后添加 --confirm。' })
     return
   }
-  const result = await apiRequest(config, command === 'create' ? '' : `/${encodeURIComponent(id)}`, { method: command === 'create' ? 'POST' : 'PATCH', body, version })
+  const result = await apiRequest(config, command === 'create' ? base : `${base}/${encodeURIComponent(id)}`, { method: command === 'create' ? 'POST' : 'PATCH', body, version })
   output(result)
 }
 
