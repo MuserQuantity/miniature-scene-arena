@@ -6,7 +6,9 @@
 
 ## 功能与边界
 
-- 展厅支持搜索、动态分类、模型/Agent 筛选、排序和网格/大图布局切换；筛选和翻页写入浏览历史，可用浏览器后退恢复。
+- 展厅按题目聚合，一题一卡，分页和筛选计数也按题目计算；同题所有实现仍保留。无题目关联的作品单独展示，不会因为聚合而丢失。尚无实现的题目可在题目矩阵中查看。
+- 展厅支持搜索、题目分类、模型/Agent 筛选、排序和网格/大图布局切换；模型与 Agent 必须匹配同一个实现。筛选和翻页写入浏览历史，可用浏览器后退恢复。
+- 卡片封面来自匹配实现中最近更新且有封面的版本，并注明来源；不会借用不匹配模型的封面。点击卡片进入题目页并展示该版本，“查看全部实现”入口保留完整的版本选择。最新/最早排序按匹配实现的收录时间计算。
 - 数据分为「题目」和「作品」：题目是一份可复用的提示词，作品是某个模型与 Agent 对题目的一次实现。`/prompts` 以矩阵展示每个题目已有哪些模型版本，`/prompts/{slug}` 可并排运行同题作品进行对比。
 - 正式版本不附带演示作品。新数据卷从空展厅开始，只展示通过 API 收录的场景。
 - 新增作品使用资源内嵌的单文件 HTML，可通过 API 新建、修改代码、封面和资料。提交成功后刷新页面即可看到，不需要重建镜像。
@@ -49,7 +51,7 @@ pnpm scenes init-key
 
 ## 使用 skill 管理场景
 
-skill 位于 `.devin/skills/manage-scenes/SKILL.md`，可以在 Devin 中调用 `/manage-scenes`，或直接要求代理使用该 skill 新增、修改场景。它会先检查文件、读取当前版本、展示变更计划，得到确认后再提交。
+skill 位于 `.devin/skills/manage-scenes/SKILL.md`，可以在 Devin 中调用 `/manage-scenes`，或直接要求代理使用该 skill 管理场景、题目及确认后的单场景或题目删除。它会先检查文件、读取当前版本、展示变更计划，得到确认后再提交。
 
 配套脚本仅依赖 Node.js 内置模块，可以用 `--config /path/to/.env` 指定其他私有配置文件。接口命令如下：
 
@@ -68,7 +70,7 @@ pnpm scenes prompts create --metadata prompt.json --body prompt.md
 pnpm scenes prompts create --metadata prompt.json --body prompt.md --confirm
 ```
 
-题目元数据的 `title`、`slug` 必填，正文来自 `--body` 或 `body` 字段；可选 `number`（序号）、`summary`、`category`、`tags`、`notes`。作品元数据通过 `promptId` 引用题目，例如：
+题目元数据的 `title`、`slug` 必填，正文来自 `--body` 或 `body` 字段；可选 `number`（默认留空）、`summary`、`category`、`tags`、`notes`。除非明确要求，新题不添加编号。作品元数据通过 `promptId` 引用题目，例如：
 
 ```json
 {
@@ -101,9 +103,41 @@ pnpm scenes update scene-id --version 2 --metadata patch.json --html scene.html 
 
 `--html`、`--metadata`、`--cover` 可按需组合，`--clear-cover` 用于明确移除封面。不带 `--confirm` 不会执行写请求。下载源码不会覆盖已有文件。服务端会检查版本，发生冲突时需重新读取并合并，不要自动覆盖。
 
+### 单独删除场景
+
+先用 `get` 核对作品 ID、模型、Agent、题目关联和当前版本，备份元数据、实际提示词、HTML 和封面，再预演并确认：
+
+```sh
+pnpm scenes delete scene-id --version 2
+pnpm scenes delete scene-id --version 2 --confirm
+```
+
+预演只发出 GET，展示目标站点和作品；确认时再次核对版本，只删除指定场景的目录记录，保留题目、同题其他实现和所有历史资产。即使删除最后一个实现，也不会删除题目。作品详情、播放、渲染、封面和管理代码入口随后返回 404。版本变化时必须重新读取、比较并确认，不自动重试。目标服务需先部署支持此接口的代码；这项管理能力不在公开网页提供删除按钮。
+
+### 删除题目及关联实现
+
+先用 `prompts get` 核对题目及全部关联实现，用 `get`/`code` 备份元数据和 HTML，并保存封面。删除的是目录记录，题目、作品详情及资源路由随后返回 404；存储中的历史 HTML 和封面文件不会被清理，但保留资产不等于自动恢复目录记录。
+
+关联作品必须逐个提供当前 ID 和版本，不支持自动扩展级联范围。用实际 GET 返回的值填写 `delete-plan.json`：
+
+```json
+{
+  "scenes": [
+    { "id": "scene-returned-id", "version": 2 }
+  ]
+}
+```
+
+```sh
+pnpm scenes prompts delete prompt-id --version 2 --metadata delete-plan.json
+pnpm scenes prompts delete prompt-id --version 2 --metadata delete-plan.json --confirm
+```
+
+删除预检会发出只读 GET，展示目标站点、题目和作品清单；没有 `--confirm` 不会发送 DELETE。确认时再次核对题目和子作品版本，服务端在同一存储锁中原子删除。题目无关联作品时可省略 `--metadata`。任何版本或关联集合变化都需重新读取、比较并确认，不能自动重试写请求。代码更新必须先部署到目标服务，再执行删除。
+
 ## 管理 API
 
-所有以下接口都要求 `X-API-Key` 请求头，POST/PATCH 使用 `application/json`。
+所有以下接口都要求 `X-API-Key` 请求头，POST/PATCH/DELETE 使用 `application/json`。
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
@@ -111,24 +145,28 @@ pnpm scenes update scene-id --version 2 --metadata patch.json --html scene.html 
 | POST | `/api/v1/scenes` | 新建并公开场景，返回 201、`scene`、公开 `url`、`Location` 和 `ETag` |
 | GET | `/api/v1/scenes/{id}` | 返回当前 `scene`、公开 `url` 和 `ETag` |
 | PATCH | `/api/v1/scenes/{id}` | 局部修改，必须携带 GET 返回的 `If-Match`，例如 `"2"` |
+| DELETE | `/api/v1/scenes/{id}` | 只删除指定场景，必须携带场景 `If-Match` 并提交 `{}`；保留题目、其他作品及历史资产 |
 | GET | `/api/v1/scenes/{id}/code` | 下载纯文本 HTML 源码及其对应版本 ETag |
 | GET | `/api/v1/prompts` | 返回 `{ "prompts": [...] }` |
 | POST | `/api/v1/prompts` | 新建题目，返回 201、`prompt`、公开 `url`、`Location` 和 `ETag` |
 | GET | `/api/v1/prompts/{id}` | 返回 `prompt`、已关联的 `scenes` 摘要、公开 `url` 和 `ETag` |
 | PATCH | `/api/v1/prompts/{id}` | 局部修改题目，必须携带 `If-Match` |
+| DELETE | `/api/v1/prompts/{id}` | 删除题目及清单中全部关联作品；必须携带题目 `If-Match`，JSON `scenes` 数组逐项提供作品 `id` 和 `version` |
 
 新建作品必填 `title`、`slug`、`html`。可选资料字段为 `subtitle`、`description`、`category`、`tags`、`promptId`、`prompt`、`promptSource`、`model`、`modelVersion`、`thinking`、`agent`、`agentVersion`、`parameters`、`notes`。`promptId` 必须是已存在的题目 ID，空字符串表示不关联。封面字段 `cover` 接受 PNG/JPEG/WebP base64 data URL，空字符串表示清除封面。
 
-新建题目必填 `title`、`slug`、`body`；可选 `number`、`summary`、`category`、`tags`、`notes`。题目 slug 创建后不可修改，没有删除接口。
+新建题目必填 `title`、`slug`、`body`；可选 `number`、`summary`、`category`、`tags`、`notes`。题目 slug 创建后不可修改。删除需独立确认题目及关联作品范围。
 
 修改可提交上述资料、HTML 和封面的子集；未提交字段保持不变，`parameters` 等对象字段提交后整体替换。ID、slug、renderer、创建时间和版本不可直接修改。所有正式场景统一使用自包含 HTML，代码修改通过 `html` 字段提交。
 
 - HTML 上限：4 MiB 减 16 KiB；必须包含完整 `<html>` 文档。
 - 封面上限：2 MiB，尺寸不超过 8192×8192；只接受静态 PNG/JPEG/WebP。服务端完整解码、去除元数据并归一化为 WebP。
 - 元数据上限：256 KiB；完整 JSON 请求上限：8 MiB。字段另有长度限制，校验错误会返回具体字段。
-- 不支持删除接口。所有写入立即影响公开数据，调用端应在提交前确认内容。
+- 单独删除场景时只接受 `{}`，成功返回 `deletedScene`（ID、slug、标题、版本、promptId）和 `assetsRetained: true`，不会删除题目或其他作品。
+- 删除题目时，`scenes` 必须与当前全部关联作品精确匹配，不接受通配符或无条件级联。没有关联作品时提交 `{}` 或 `{"scenes":[]}`。删除成功返回 `deletedPrompt`、`deletedScenes` 和 `assetsRetained: true`。不提供自动恢复接口。
+- 所有写入立即影响公开数据，调用端应在提交前确认内容；历史资源清理不属于场景或题目删除操作。
 
-常见状态码：401 密钥不正确；404 场景不存在；409 地址重复或目录容量不足；412 版本冲突；413 请求过大；415 内容类型错误；422 字段或图像校验失败；428 缺少版本条件；500 存储异常；503 密钥未配置或存储忙。
+常见状态码：401 密钥不正确；404 记录不存在；409 地址重复、目录容量不足或未明确关联作品清单；412 题目/作品版本或关联集合变化；413 请求过大；415 内容类型错误；422 字段或图像校验失败；428 缺少版本条件；500 存储异常；503 密钥未配置或存储忙。
 
 公开路由 `/scenes/{slug}`、`/scenes/{slug}/play`、`/scenes/{slug}/render`、`/scenes/{slug}/cover`、`/prompts` 和 `/prompts/{slug}` 不需要密钥。封面字段返回含内容哈希的 URL，应直接使用返回值，不手工拼接；仅修改资料不会改变封面 URL。HTML 只能通过带沙箱策略的渲染路由交付，管理下载接口不作为可执行页面使用。
 

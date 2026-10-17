@@ -21,6 +21,7 @@ pnpm scenes get <id> [--config .env]
 pnpm scenes code <id> --out <new-file.html> [--config .env]
 pnpm scenes create --metadata <metadata.json> --html <scene.html> [--cover <cover.png>] [--confirm]
 pnpm scenes update <id> --version <version> [--metadata <patch.json>] [--html <scene.html>] [--cover <cover.png> | --clear-cover] [--confirm]
+pnpm scenes delete <id> --version <version> [--confirm]
 
 Prompt (题目) management — a prompt groups every scene generated from the same brief:
 
@@ -28,9 +29,14 @@ pnpm scenes prompts list [--config .env]
 pnpm scenes prompts get <prompt-id> [--config .env]
 pnpm scenes prompts create --metadata <prompt.json> [--body <prompt.md>] [--confirm]
 pnpm scenes prompts update <prompt-id> --version <version> [--metadata <patch.json>] [--body <prompt.md>] [--confirm]
+pnpm scenes prompts delete <prompt-id> --version <version> [--metadata <delete-plan.json>] [--confirm]
 
 Scene metadata may reference a prompt with "promptId"; the server rejects unknown IDs.
 Without --confirm, create/update only validate local files and print a plan.
+Deletion reads the current record, but never writes without --confirm.
+Scene deletion removes only that run, preserving its prompt and all other scenes.
+Prompt deletion must explicitly list every linked run: {"scenes":[{"id":"scene-...","version":1}]}.
+Deletion removes catalog records only; historical HTML and cover assets are retained.
 The client reads SCENE_API_URL (or SITE_URL) and SCENE_API_KEY from the environment or --config.
 API keys are never accepted as command-line arguments or printed.
 `
@@ -151,6 +157,44 @@ async function promptPayloadFor(command, values) {
   return finishPayload(payload)
 }
 
+async function promptDeletionPayload(values) {
+  if (['html', 'cover', 'clear-cover', 'body', 'out'].some((name) => values[name] !== undefined)) throw new Error('删除只接受 --metadata 指定关联作品清单，不接受 HTML、封面、正文或输出文件选项。')
+  const metadata = values.metadata ? await metadataFile(values.metadata, new Set(['scenes']), 'delete') : {}
+  const scenes = metadata.scenes === undefined ? [] : metadata.scenes
+  if (!Array.isArray(scenes) || scenes.length > 10000 || scenes.some((scene) => !scene || typeof scene !== 'object' || Array.isArray(scene) || Object.keys(scene).some((name) => !['id', 'version'].includes(name)) || typeof scene.id !== 'string' || !/^scene-[a-z0-9-]+$/.test(scene.id) || scene.id.length > 80 || !Number.isSafeInteger(scene.version) || scene.version < 1)) throw new Error('删除清单的 scenes 必须是合法作品 id 与正整数 version 的数组。')
+  if (new Set(scenes.map((scene) => scene.id)).size !== scenes.length) throw new Error('删除清单不能包含重复作品 ID。')
+  return finishPayload({ scenes: scenes.map(({ id, version }) => ({ id, version })) })
+}
+
+async function deletePrompt(config, id, version, values) {
+  const body = await promptDeletionPayload(values)
+  const pathname = `/api/v1/prompts/${encodeURIComponent(id)}`
+  const current = await apiRequest(config, pathname)
+  if (!current.prompt || current.prompt.id !== id || typeof current.prompt.title !== 'string' || typeof current.prompt.slug !== 'string' || !Array.isArray(current.scenes) || current.scenes.some((scene) => !scene || typeof scene.id !== 'string' || !/^scene-[a-z0-9-]+$/.test(scene.id) || !Number.isSafeInteger(scene.version) || scene.version < 1) || new Set(current.scenes.map((scene) => scene.id)).size !== current.scenes.length) throw new Error('接口返回的题目或关联作品格式不正确。')
+  if (current.prompt.version !== version) throw new Error('题目版本已变化，请重新读取、比较并确认删除。')
+  if (current.scenes.length && !body.scenes.length) throw new Error('题目仍有关联作品；请先备份，并通过 --metadata 明确列出全部关联作品的 id 和 version。')
+  const expected = new Map(body.scenes.map((scene) => [scene.id, scene.version]))
+  if (current.scenes.length !== expected.size || current.scenes.some((scene) => expected.get(scene.id) !== scene.version)) throw new Error('关联作品集合或版本已变化，请重新读取、比较并确认删除；不会自动扩展删除清单。')
+  if (!values.confirm) {
+    output({ mode: 'dry-run', resource: 'prompts', operation: 'delete', method: 'DELETE', origin: config.origin, id, version, title: current.prompt.title, slug: current.prompt.slug, scenes: current.scenes.map(({ id, slug, title, model, agent, version }) => ({ id, slug, title, model, agent, version })), assetsRetained: true, message: '尚未删除。先备份并确认题目及每个关联作品；部署支持删除的服务版本后再添加 --confirm。' })
+    return
+  }
+  output(await apiRequest(config, pathname, { method: 'DELETE', body, version }))
+}
+
+async function deleteScene(config, id, version, values) {
+  if (['metadata', 'html', 'cover', 'clear-cover', 'body', 'out'].some((name) => values[name] !== undefined)) throw new Error('单独删除场景不接受元数据、HTML、封面、正文或输出文件选项；只删除指定 ID，不级联删除题目或其他作品。')
+  const pathname = `/api/v1/scenes/${encodeURIComponent(id)}`
+  const { scene } = await apiRequest(config, pathname)
+  if (!scene || scene.id !== id || typeof scene.title !== 'string' || typeof scene.slug !== 'string' || typeof scene.promptId !== 'string' || !Number.isSafeInteger(scene.version) || scene.version < 1) throw new Error('接口返回的场景格式不正确。')
+  if (scene.version !== version) throw new Error('场景版本已变化，请重新读取、比较并确认删除。')
+  if (!values.confirm) {
+    output({ mode: 'dry-run', resource: 'scenes', operation: 'delete', method: 'DELETE', origin: config.origin, id, version, title: scene.title, slug: scene.slug, model: scene.model, agent: scene.agent, promptId: scene.promptId, assetsRetained: true, message: '尚未删除。先备份并确认此场景；保留题目、其他作品和历史资源文件。部署支持单场景删除的服务版本后再添加 --confirm。' })
+    return
+  }
+  output(await apiRequest(config, pathname, { method: 'DELETE', body: {}, version }))
+}
+
 async function payloadFor(command, values) {
   if (values.body) throw new Error('--body 只用于题目；场景提示词请放在元数据的 prompt 字段。')
   const metadata = values.metadata ? await metadataFile(values.metadata, metadataFields, command) : {}
@@ -204,14 +248,14 @@ export async function main(args = process.argv.slice(2)) {
   if (values.help || !positionals.length) { output(help); return }
   const resource = positionals[0] === 'prompts' ? 'prompts' : 'scenes'
   const [command, id, ...extra] = resource === 'prompts' ? positionals.slice(1) : positionals
-  const commands = resource === 'prompts' ? ['list', 'get', 'create', 'update'] : ['init-key', 'list', 'get', 'code', 'create', 'update']
+  const commands = resource === 'prompts' ? ['list', 'get', 'create', 'update', 'delete'] : ['init-key', 'list', 'get', 'code', 'create', 'update', 'delete']
   if (extra.length || !commands.includes(command)) throw new Error('未知命令或多余参数，请查看 --help。')
   if (command === 'init-key') { output(await initializeKey(values['config'])); return }
   const idPattern = resource === 'prompts' ? /^prompt-[a-z0-9-]+$/ : /^scene-[a-z0-9-]+$/
-  if (['get', 'code', 'update'].includes(command) && !idPattern.test(id ?? '')) throw new Error(resource === 'prompts' ? '请提供 prompts list/get 返回的题目 ID。' : '请提供 list/get 返回的场景 ID。')
+  if (['get', 'code', 'update', 'delete'].includes(command) && !idPattern.test(id ?? '')) throw new Error(resource === 'prompts' ? '请提供 prompts list/get 返回的题目 ID。' : '请提供 list/get 返回的场景 ID。')
   if (['list', 'create'].includes(command) && id) throw new Error('此命令不接受 ID 参数。')
-  const writing = command === 'create' || command === 'update'
-  const config = await configuration(values['config'], !writing || Boolean(values.confirm))
+  const writing = command === 'create' || command === 'update' || command === 'delete'
+  const config = await configuration(values['config'], !writing || Boolean(values.confirm) || command === 'delete')
   const base = `/api/v1/${resource}`
   if (command === 'list') {
     const data = await apiRequest(config, base)
@@ -233,7 +277,8 @@ export async function main(args = process.argv.slice(2)) {
     return
   }
   const version = values.version === undefined ? undefined : Number(values.version)
-  if (command === 'update' && (!Number.isSafeInteger(version) || version < 1)) throw new Error('修改前请先 get，并用 --version 提供读取到的版本号。')
+  if (['update', 'delete'].includes(command) && (!Number.isSafeInteger(version) || version < 1)) throw new Error('操作前请先 get，并用 --version 提供读取到的版本号。')
+  if (command === 'delete') return resource === 'prompts' ? deletePrompt(config, id, version, values) : deleteScene(config, id, version, values)
   const body = resource === 'prompts' ? await promptPayloadFor(command, values) : await payloadFor(command, values)
   if (!values.confirm) {
     output({ mode: 'dry-run', resource, operation: command, origin: config.origin, id, version, title: body.title, slug: body.slug, promptId: body.promptId, fields: Object.keys(body), htmlBytes: body.html ? Buffer.byteLength(body.html) : 0, bodyBytes: body.body ? Buffer.byteLength(body.body) : 0, requestBytes: Buffer.byteLength(JSON.stringify(body)), message: '尚未提交。确认目标与内容后添加 --confirm。' })

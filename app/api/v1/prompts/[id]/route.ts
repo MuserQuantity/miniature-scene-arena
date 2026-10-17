@@ -23,3 +23,10 @@ export async function PATCH(request: Request, { params }: Context) {
     return sceneJson({ prompt, url: `/prompts/${prompt.slug}` }, 200, { ETag: sceneEtag(prompt.version) })
   })
 }
+
+export async function DELETE(request: Request, { params }: Context) {
+  return sceneApi(request, async () => {
+    const version = expectedSceneVersion(request)
+    return sceneJson(await getSceneStore().deletePrompt((await params).id, await readSceneJson(request), version))
+  })
+}

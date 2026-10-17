@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterEach, beforeEach, test } from 'node:test'
 import { execFile } from 'node:child_process'
-import { createServer, type Server } from 'node:http'
+import { createServer, type RequestListener, type Server } from 'node:http'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -33,6 +33,178 @@ async function run(args: string[], origin = 'http://127.0.0.1:3100') {
     env: { ...process.env, SCENE_API_KEY: key, SCENE_API_URL: origin },
   })
 }
+
+async function mockApi(handler: RequestListener) {
+  server = createServer(handler)
+  await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  return `http://127.0.0.1:${address.port}`
+}
+
+const deletionRecord = { prompt: { id: 'prompt-delete', slug: 'delete-topic', title: '待删除题目', version: 3 }, scenes: [{ id: 'scene-linked', slug: 'linked-run', title: '关联作品', model: '测试模型', agent: '测试 Agent', version: 7 }] }
+
+const sceneDeletionRecord = { scene: { id: 'scene-delete', slug: 'delete-single', title: '待删除场景', model: '测试模型', agent: '测试 Agent', promptId: 'prompt-keep', version: 4 } }
+
+test('single-scene deletion dry-runs identify the exact run and only read', async () => {
+  const requests: string[] = []
+  const origin = await mockApi((request, response) => {
+    requests.push(`${request.method} ${request.url}`)
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify(sceneDeletionRecord))
+  })
+  const result = await run(['delete', 'scene-delete', '--version', '4'], origin)
+  const plan = JSON.parse(result.stdout)
+  assert.equal(plan.mode, 'dry-run')
+  assert.equal(plan.resource, 'scenes')
+  assert.equal(plan.operation, 'delete')
+  assert.equal(plan.origin, origin)
+  assert.equal(plan.id, 'scene-delete')
+  assert.equal(plan.title, '待删除场景')
+  assert.equal(plan.model, '测试模型')
+  assert.equal(plan.promptId, 'prompt-keep')
+  assert.equal(plan.assetsRetained, true)
+  assert.deepEqual(requests, ['GET /api/v1/scenes/scene-delete'])
+  assert.ok(!result.stdout.includes(key))
+})
+
+test('confirmed single-scene deletion sends only an empty payload and the reviewed version', async () => {
+  const received: { method?: string; url?: string; key?: string; version?: string; body?: unknown }[] = []
+  const origin = await mockApi(async (request, response) => {
+    let body = ''
+    for await (const chunk of request) body += chunk
+    received.push({ method: request.method, url: request.url, key: request.headers['x-api-key'] as string, version: request.headers['if-match'] as string, body: body ? JSON.parse(body) : undefined })
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify(request.method === 'GET' ? sceneDeletionRecord : { deletedScene: sceneDeletionRecord.scene, assetsRetained: true }))
+  })
+  const result = await run(['delete', 'scene-delete', '--version', '4', '--confirm'], origin)
+  assert.deepEqual(received.map(item => item.method), ['GET', 'DELETE'])
+  assert.deepEqual(received[1], { method: 'DELETE', url: '/api/v1/scenes/scene-delete', key, version: '"4"', body: {} })
+  assert.equal(JSON.parse(result.stdout).deletedScene.id, 'scene-delete')
+  assert.ok(!result.stdout.includes(key))
+})
+
+test('single-scene deletion stops on changed versions or mismatched response identities', async () => {
+  const methods: string[] = []
+  let current = structuredClone(sceneDeletionRecord)
+  const origin = await mockApi((request, response) => {
+    methods.push(request.method!)
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify(current))
+  })
+  const args = ['delete', 'scene-delete', '--version', '4', '--confirm']
+  current.scene.version = 5
+  await assert.rejects(run(args, origin), /版本/)
+  current = structuredClone(sceneDeletionRecord)
+  current.scene.id = 'scene-different'
+  await assert.rejects(run(args, origin), /格式/)
+  assert.deepEqual(methods, ['GET', 'GET'])
+})
+
+test('single-scene deletion rejects file options and requires a version before network access', async () => {
+  for (const option of ['--metadata', '--html', '--cover', '--body', '--out', '--clear-cover']) {
+    const args = ['delete', 'scene-delete', '--version', '4', option, ...(option === '--clear-cover' ? [] : ['unused-file'])]
+    await assert.rejects(run(args, 'http://127.0.0.1:1'), /删除/)
+  }
+  await assert.rejects(run(['delete', 'scene-delete'], 'http://127.0.0.1:1'), /--version/)
+})
+
+test('single-scene deletion never retries a failed write or switches to prompt deletion', async () => {
+  const requests: string[] = []
+  const origin = await mockApi((request, response) => {
+    requests.push(`${request.method} ${request.url}`)
+    response.writeHead(request.method === 'GET' ? 200 : 412, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify(request.method === 'GET' ? sceneDeletionRecord : { error: { code: 'VERSION_CONFLICT', message: '版本已变化' } }))
+  })
+  await assert.rejects(run(['delete', 'scene-delete', '--version', '4', '--confirm'], origin), /HTTP 412/)
+  assert.deepEqual(requests, ['GET /api/v1/scenes/scene-delete', 'DELETE /api/v1/scenes/scene-delete'])
+})
+
+test('prompt deletion dry-runs read the target but never send a write', async () => {
+  const methods: string[] = []
+  const origin = await mockApi((request, response) => {
+    methods.push(request.method!)
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify(deletionRecord))
+  })
+  const filename = path.join(directory, 'delete-plan.json')
+  await writeFile(filename, JSON.stringify({ scenes: [{ id: 'scene-linked', version: 7 }] }))
+  const result = await run(['prompts', 'delete', 'prompt-delete', '--version', '3', '--metadata', filename], origin)
+  const plan = JSON.parse(result.stdout)
+  assert.equal(plan.mode, 'dry-run')
+  assert.equal(plan.operation, 'delete')
+  assert.equal(plan.title, '待删除题目')
+  assert.equal(plan.version, 3)
+  assert.equal(plan.assetsRetained, true)
+  assert.equal(plan.scenes[0].id, 'scene-linked')
+  assert.deepEqual(methods, ['GET'])
+  assert.ok(!result.stdout.includes(key))
+})
+
+test('confirmed deletion sends an exact child-version plan and parent If-Match', async () => {
+  const received: { method?: string; key?: string; version?: string; body?: unknown }[] = []
+  const origin = await mockApi(async (request, response) => {
+    let body = ''
+    for await (const chunk of request) body += chunk
+    received.push({ method: request.method, key: request.headers['x-api-key'] as string, version: request.headers['if-match'] as string, body: body ? JSON.parse(body) : undefined })
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify(request.method === 'GET' ? deletionRecord : { deletedPrompt: deletionRecord.prompt, deletedScenes: deletionRecord.scenes, assetsRetained: true }))
+  })
+  const filename = path.join(directory, 'delete-plan.json')
+  await writeFile(filename, JSON.stringify({ scenes: [{ id: 'scene-linked', version: 7 }] }))
+  const result = await run(['prompts', 'delete', 'prompt-delete', '--version', '3', '--metadata', filename, '--confirm'], origin)
+  assert.deepEqual(received.map(item => item.method), ['GET', 'DELETE'])
+  assert.deepEqual(received[1], { method: 'DELETE', key, version: '"3"', body: { scenes: [{ id: 'scene-linked', version: 7 }] } })
+  assert.equal(JSON.parse(result.stdout).deletedPrompt.id, 'prompt-delete')
+  assert.ok(!result.stdout.includes(key))
+})
+
+test('stale prompt versions and changed linked runs stop deletion before any write', async () => {
+  const methods: string[] = []
+  let current = structuredClone(deletionRecord)
+  const origin = await mockApi((request, response) => {
+    methods.push(request.method!)
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify(current))
+  })
+  const filename = path.join(directory, 'delete-plan.json')
+  await writeFile(filename, JSON.stringify({ scenes: [{ id: 'scene-linked', version: 7 }] }))
+  const args = ['prompts', 'delete', 'prompt-delete', '--version', '3', '--metadata', filename, '--confirm']
+  current.prompt.version = 4
+  await assert.rejects(run(args, origin), /版本/)
+  current = structuredClone(deletionRecord)
+  current.scenes[0].version = 8
+  await assert.rejects(run(args, origin), /关联作品|版本/)
+  current = structuredClone(deletionRecord)
+  current.scenes.push({ ...current.scenes[0], id: 'scene-new' })
+  await assert.rejects(run(args, origin), /关联作品|集合/)
+  current = structuredClone(deletionRecord)
+  await assert.rejects(run(['prompts', 'delete', 'prompt-delete', '--version', '3', '--confirm'], origin), /关联作品|清单/)
+  assert.ok(methods.every(method => method === 'GET'))
+})
+
+test('deletion rejects invalid local plans and unrelated file options', async () => {
+  const filename = path.join(directory, 'delete-plan.json')
+  for (const payload of [{ all: true }, { scenes: 'all' }, { scenes: [null] }, { scenes: [{ id: 'scene-linked', version: 0 }] }, { scenes: [{ id: 'scene-linked', version: 7, title: 'extra' }] }, { scenes: [{ id: 'scene-linked', version: 7 }, { id: 'scene-linked', version: 7 }] }]) {
+    await writeFile(filename, JSON.stringify(payload))
+    await assert.rejects(run(['prompts', 'delete', 'prompt-delete', '--version', '3', '--metadata', filename], 'http://127.0.0.1:1'), /字段|清单|版本|scenes/)
+  }
+  await assert.rejects(run(['prompts', 'delete', 'prompt-delete', '--version', '3', '--html', 'unused.html'], 'http://127.0.0.1:1'), /删除/)
+  await assert.rejects(run(['prompts', 'delete', 'prompt-delete'], 'http://127.0.0.1:1'), /--version/)
+})
+
+test('failed deletion requests are not retried or replaced with a refreshed plan', async () => {
+  const methods: string[] = []
+  const origin = await mockApi((request, response) => {
+    methods.push(request.method!)
+    response.writeHead(request.method === 'GET' ? 200 : 412, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify(request.method === 'GET' ? deletionRecord : { error: { code: 'VERSION_CONFLICT', message: '版本已变化' } }))
+  })
+  const filename = path.join(directory, 'delete-plan.json')
+  await writeFile(filename, JSON.stringify({ scenes: [{ id: 'scene-linked', version: 7 }] }))
+  await assert.rejects(run(['prompts', 'delete', 'prompt-delete', '--version', '3', '--metadata', filename, '--confirm'], origin), /HTTP 412/)
+  assert.deepEqual(methods, ['GET', 'DELETE'])
+})
 
 test('initialization preserves configuration, creates a private key, and never rotates it', async () => {
   const filename = path.join(directory, '.env')

@@ -108,6 +108,72 @@ test('invalid inputs cannot create scenes or change managed identity fields', as
   expect(after).toBe(before)
 })
 
+test('single-scene deletion requires authentication, an exact version and an empty JSON object', async ({ request }) => {
+  const scene = await createScene(request)
+  const url = `/api/v1/scenes/${scene.id}`
+  expect((await request.delete(url, { data: {} })).status()).toBe(401)
+  expect((await request.delete(url, { headers: { 'X-API-Key': 'incorrect' }, data: {} })).status()).toBe(401)
+  expect((await request.delete(url, { headers: auth, data: {} })).status()).toBe(428)
+  for (const version of ['*', '1', '"9007199254740993"']) {
+    expect((await request.delete(url, { headers: { ...auth, 'If-Match': version }, data: {} })).status()).toBe(400)
+  }
+  const headers = { ...auth, 'If-Match': '"1"' }
+  expect((await request.delete(url, { headers })).status()).toBe(415)
+  expect((await request.delete(url, { headers: { ...headers, 'Content-Type': 'application/json' }, data: Buffer.from('invalid-json') })).status()).toBe(400)
+  for (const data of [{ all: true }, { scenes: [] }, { promptId: 'prompt-other' }, []]) {
+    expect((await request.delete(url, { headers, data })).status()).toBe(422)
+  }
+  const updated = await request.patch(url, { headers, data: { notes: '刚刚修改' } })
+  expect(updated.status()).toBe(200)
+  const stale = await request.delete(url, { headers, data: {} })
+  expect(stale.status()).toBe(412)
+  expect((await stale.json()).error.code).toBe('VERSION_CONFLICT')
+  expect((await request.get(url, { headers: auth })).status()).toBe(200)
+  expect((await request.delete('/api/v1/scenes/scene-missing', { headers, data: {} })).status()).toBe(404)
+})
+
+test('single-scene deletion removes only the selected run from public pages and comparison lists', async ({ page, request }) => {
+  const promptResponse = await request.post('/api/v1/prompts', { headers: auth, data: { title: `保留题目 ${randomUUID().slice(0, 6)}`, slug: `keep-prompt-${randomUUID()}`, body: '保留题目正文' } })
+  expect(promptResponse.status()).toBe(201)
+  const prompt = (await promptResponse.json()).prompt
+  const image = await sharp({ create: { width: 12, height: 8, channels: 3, background: '#94c9c5' } }).png().toBuffer()
+  const scene = await createScene(request, { promptId: prompt.id, model: '待删除模型', cover: `data:image/png;base64,${image.toString('base64')}` })
+  const sibling = await createScene(request, { promptId: prompt.id, model: '保留同题模型' })
+  const other = await createScene(request, { model: '保留独立模型' })
+  expect((await request.get(scene.cover)).status()).toBe(200)
+  expect((await request.head(`/scenes/${scene.slug}/render`)).status()).toBe(200)
+  const deleted = await request.delete(`/api/v1/scenes/${scene.id}`, { headers: { ...auth, 'If-Match': '"1"' }, data: {} })
+  expect(deleted.status()).toBe(200)
+  expect(deleted.headers()['cache-control']).toBe('no-store')
+  expect(await deleted.json()).toEqual({ deletedScene: { id: scene.id, slug: scene.slug, title: scene.title, version: scene.version, promptId: prompt.id }, assetsRetained: true })
+  for (const suffix of ['', '/code']) expect((await request.get(`/api/v1/scenes/${scene.id}${suffix}`, { headers: auth })).status()).toBe(404)
+  for (const suffix of ['', '/play', '/render']) expect((await request.get(`/scenes/${scene.slug}${suffix}`)).status()).toBe(404)
+  expect((await request.head(`/scenes/${scene.slug}/render`)).status()).toBe(404)
+  expect((await request.get(scene.cover)).status()).toBe(404)
+  expect((await request.delete(`/api/v1/scenes/${scene.id}`, { headers: { ...auth, 'If-Match': '"1"' }, data: {} })).status()).toBe(404)
+  const detail = await request.get(`/api/v1/prompts/${prompt.id}`, { headers: auth })
+  const current = await detail.json()
+  expect(current.prompt).toEqual(prompt)
+  expect(current.scenes.map((run: { id: string }) => run.id)).toEqual([sibling.id])
+  for (const retained of [sibling, other]) {
+    expect((await (await request.get(`/api/v1/scenes/${retained.id}`, { headers: auth })).json()).scene).toEqual(retained)
+    expect((await request.get(`/scenes/${retained.slug}/render`)).status()).toBe(200)
+  }
+  const listed = (await (await request.get('/api/v1/scenes', { headers: auth })).json()).scenes
+  expect(listed.some((run: { id: string }) => run.id === scene.id)).toBe(false)
+  await page.goto(`/prompts/${prompt.slug}?compare=${scene.slug},${sibling.slug}`)
+  await expect(page.getByRole('heading', { name: prompt.title, exact: true })).toBeVisible()
+  await expect(page.locator('iframe')).toHaveCount(1)
+  await expect(page.getByText('待删除模型', { exact: true })).toHaveCount(0)
+  await page.goto(`/?prompt=${prompt.slug}`)
+  await expect(page.getByRole('heading', { name: prompt.title, exact: true })).toBeVisible()
+  await page.goto('/prompts')
+  const row = page.getByRole('row', { name: new RegExp(prompt.title) })
+  await expect(row).toBeVisible()
+  await expect(row.getByRole('link', { name: /保留同题模型/ })).toBeVisible()
+  await expect(row.getByRole('link', { name: /待删除模型/ })).toHaveCount(0)
+})
+
 test('the viewer refuses HTML when proxy responses strip its sandbox policy', async ({ page, request }) => {
   const scene = await createScene(request)
   await page.route(`**/scenes/${scene.slug}/render?*`, async (route) => {
@@ -119,7 +185,7 @@ test('the viewer refuses HTML when proxy responses strip its sandbox policy', as
   await expect(page.locator('iframe')).toHaveCount(0)
 })
 
-test('the skill client can create, inspect, download and update a scene', async ({ request }, testInfo) => {
+test('the skill client can create, inspect, download, update and delete a scene', async ({ request }, testInfo) => {
   const script = path.resolve('.devin/skills/manage-scenes/scripts/scenes.mjs')
   const metadata = testInfo.outputPath('metadata.json')
   const source = testInfo.outputPath('scene.html')
@@ -145,4 +211,13 @@ test('the skill client can create, inspect, download and update a scene', async 
   const updated = await run(['update', scene.id, '--version', '1', '--metadata', patch, '--confirm'])
   expect(JSON.parse(updated.stdout).scene.version).toBe(2)
   expect(JSON.parse(updated.stdout).scene.description).toBe('来自 CLI')
+  const deletionArgs = ['delete', scene.id, '--version', '2']
+  const deletionPreview = JSON.parse((await run(deletionArgs)).stdout)
+  expect(deletionPreview.mode).toBe('dry-run')
+  expect(deletionPreview.id).toBe(scene.id)
+  expect((await request.get(`/api/v1/scenes/${scene.id}`, { headers: auth })).status()).toBe(200)
+  const deleted = JSON.parse((await run([...deletionArgs, '--confirm'])).stdout)
+  expect(deleted.deletedScene.id).toBe(scene.id)
+  expect(deleted.assetsRetained).toBe(true)
+  expect((await request.get(`/api/v1/scenes/${scene.id}`, { headers: auth })).status()).toBe(404)
 })

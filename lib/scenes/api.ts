@@ -35,7 +35,7 @@ export function sceneEtag(version: number) {
 
 export function expectedSceneVersion(request: Request) {
   const header = request.headers.get('if-match')
-  if (!header) throw new SceneError(428, 'VERSION_REQUIRED', '修改前请先 GET 场景，并通过 If-Match 提交它的 ETag。')
+  if (!header) throw new SceneError(428, 'VERSION_REQUIRED', '操作前请先 GET 对应记录，并通过 If-Match 提交它的 ETag。')
   const match = /^"([1-9]\d*)"$/.exec(header)
   const version = match ? Number(match[1]) : NaN
   if (!Number.isSafeInteger(version)) throw new SceneError(400, 'INVALID_VERSION', 'If-Match 必须是 GET 返回的版本 ETag。')

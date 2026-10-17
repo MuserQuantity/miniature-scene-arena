@@ -107,4 +107,13 @@ export const promptRecordSchema = promptMetadataSchema.extend({
   version: z.number().int().positive(),
 }).strip()
 
+export const deleteSceneSchema = z.object({}).strict()
+
+export const deletePromptSchema = z.object({
+  scenes: z.array(z.object({
+    id: sceneRecordSchema.shape.id,
+    version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  }).strict()).max(10000).refine((scenes) => new Set(scenes.map((scene) => scene.id)).size === scenes.length, '删除清单不能包含重复作品 ID').default([]),
+}).strict()
+
 export const defaultPromptMetadata = { number: '', summary: '', category: '未分类', tags: [], body: '', notes: '' }

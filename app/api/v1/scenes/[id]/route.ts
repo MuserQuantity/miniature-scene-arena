@@ -21,3 +21,10 @@ export async function PATCH(request: Request, { params }: Context) {
     return sceneJson({ scene, url: `/scenes/${scene.slug}` }, 200, { ETag: sceneEtag(scene.version) })
   })
 }
+
+export async function DELETE(request: Request, { params }: Context) {
+  return sceneApi(request, async () => {
+    const version = expectedSceneVersion(request)
+    return sceneJson(await getSceneStore().deleteScene((await params).id, await readSceneJson(request), version))
+  })
+}

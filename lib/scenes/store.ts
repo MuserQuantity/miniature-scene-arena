@@ -6,7 +6,7 @@ import { z } from 'zod'
 import type { PromptRecord, SceneRecord } from './model'
 import { isErrno, normalizeCover, readBoundedFile } from './files'
 import {
-  createPromptSchema, createSceneSchema, defaultPromptMetadata, defaultSceneMetadata, MAX_COVER_BYTES, MAX_HTML_BYTES, MAX_METADATA_BYTES,
+  createPromptSchema, createSceneSchema, defaultPromptMetadata, defaultSceneMetadata, deletePromptSchema, deleteSceneSchema, MAX_COVER_BYTES, MAX_HTML_BYTES, MAX_METADATA_BYTES,
   promptRecordSchema, sceneRecordSchema, SceneError, updatePromptSchema, updateSceneSchema,
 } from './schema'
 
@@ -181,6 +181,19 @@ export function createSceneStore(directory: string) {
         return publicRecord(scene)
       })
     },
+    async deleteScene(id: string, input: unknown, expectedVersion: number) {
+      deleteSceneSchema.parse(input)
+      return writeLocked(async (catalog) => {
+        const existing = activeScenes(catalog.scenes).find((scene) => scene.id === id)
+        if (!existing) throw new SceneError(404, 'SCENE_NOT_FOUND', '未找到场景。')
+        if (existing.version !== expectedVersion) throw new SceneError(412, 'VERSION_CONFLICT', '场景已被修改，请重新读取并确认删除。')
+        await writeCatalog({ ...catalog, scenes: catalog.scenes.filter((scene) => scene.id !== id) })
+        return {
+          deletedScene: { id: existing.id, slug: existing.slug, title: existing.title, version: existing.version, promptId: existing.promptId },
+          assetsRetained: true,
+        }
+      })
+    },
     async listPrompts() {
       return sortPrompts((await readCatalog()).prompts)
     },
@@ -213,6 +226,27 @@ export function createSceneStore(directory: string) {
         checkMetadata(prompt)
         await writeCatalog({ ...catalog, prompts: catalog.prompts.map((record) => record.id === id ? prompt : record) })
         return promptRecordSchema.parse(prompt)
+      })
+    },
+    async deletePrompt(id: string, input: unknown, expectedVersion: number) {
+      const { scenes } = deletePromptSchema.parse(input)
+      return writeLocked(async (catalog) => {
+        activeScenes(catalog.scenes)
+        const existing = catalog.prompts.find((prompt) => prompt.id === id)
+        if (!existing) throw new SceneError(404, 'PROMPT_NOT_FOUND', '未找到题目。')
+        if (existing.version !== expectedVersion) throw new SceneError(412, 'VERSION_CONFLICT', '题目已被修改，请重新读取并确认删除。')
+        const linked = catalog.scenes.filter((scene) => scene.promptId === id)
+        if (linked.some((scene) => scene.renderer !== 'html')) throw new SceneError(409, 'LEGACY_LINK_EXISTS', '题目关联了历史兼容记录，需先人工核对；未删除任何数据。')
+        if (linked.length && !scenes.length) throw new SceneError(409, 'PROMPT_HAS_SCENES', '题目仍有关联作品，请明确提交每个关联作品的 ID 和版本；不会自动级联删除。')
+        const versions = new Map(scenes.map((scene) => [scene.id, scene.version]))
+        if (linked.length !== scenes.length || linked.some((scene) => !versions.has(scene.id))) throw new SceneError(412, 'SCENE_SET_CHANGED', '关联作品集合已变化，请重新读取并确认删除范围。')
+        if (linked.some((scene) => versions.get(scene.id) !== scene.version)) throw new SceneError(412, 'SCENE_VERSION_CONFLICT', '关联作品已被修改，请重新读取并确认删除。')
+        await writeCatalog({ prompts: catalog.prompts.filter((prompt) => prompt.id !== id), scenes: catalog.scenes.filter((scene) => !versions.has(scene.id)) })
+        return {
+          deletedPrompt: { id: existing.id, slug: existing.slug, title: existing.title, version: existing.version },
+          deletedScenes: linked.map(({ id, slug, title, version }) => ({ id, slug, title, version })),
+          assetsRetained: true,
+        }
       })
     },
     readDocument,
